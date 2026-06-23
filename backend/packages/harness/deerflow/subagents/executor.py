@@ -336,7 +336,19 @@ class SubagentExecutor:
         app_config = self.app_config or get_app_config()
         if self.model_name is None:
             self.model_name = resolve_subagent_model_name(self.config, self.parent_model, app_config=app_config)
-        model = create_chat_model(name=self.model_name, thinking_enabled=False, app_config=app_config)
+        # 按子代理配置开启 thinking；若解析到的模型不支持推理则优雅回退，避免 create_chat_model 抛错
+        thinking_enabled = self.config.thinking_enabled
+        if thinking_enabled:
+            model_config = app_config.get_model_config(self.model_name)
+            if model_config is None or not model_config.supports_thinking:
+                logger.warning(
+                    "[trace=%s] Subagent %s requested thinking but model '%s' does not support it; falling back to non-thinking mode",
+                    self.trace_id,
+                    self.config.name,
+                    self.model_name,
+                )
+                thinking_enabled = False
+        model = create_chat_model(name=self.model_name, thinking_enabled=thinking_enabled, app_config=app_config)
 
         from deerflow.agents.middlewares.tool_error_handling_middleware import build_subagent_runtime_middlewares
 

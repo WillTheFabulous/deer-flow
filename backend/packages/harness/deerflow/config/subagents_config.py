@@ -29,6 +29,10 @@ class SubagentOverrideConfig(BaseModel):
         default=None,
         description="Skill names whitelist for this subagent (None = inherit all enabled skills, [] = no skills)",
     )
+    thinking_enabled: bool | None = Field(
+        default=None,
+        description="Enable the model's thinking/reasoning mode for this subagent (None = keep the subagent's own default)",
+    )
 
 
 class CustomSubagentConfig(BaseModel):
@@ -55,6 +59,10 @@ class CustomSubagentConfig(BaseModel):
     model: str = Field(
         default="inherit",
         description="Model to use - 'inherit' uses parent's model",
+    )
+    thinking_enabled: bool = Field(
+        default=False,
+        description="Enable the model's thinking/reasoning mode for this subagent",
     )
     max_turns: int = Field(
         default=50,
@@ -139,6 +147,20 @@ class SubagentsAppConfig(BaseModel):
         override = self.agents.get(agent_name)
         if override is not None and override.skills is not None:
             return override.skills
+        return None
+
+    def get_thinking_for(self, agent_name: str) -> bool | None:
+        """Get the thinking-mode override for a specific agent.
+
+        Args:
+            agent_name: The name of the subagent.
+
+        Returns:
+            True/False if overridden, None otherwise (keep the subagent's own default).
+        """
+        override = self.agents.get(agent_name)
+        if override is not None and override.thinking_enabled is not None:
+            return override.thinking_enabled
         return None
 
 

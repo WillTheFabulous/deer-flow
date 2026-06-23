@@ -20,6 +20,7 @@ class SubagentConfig:
         skills: Optional list of skill names to load. If None, inherits all enabled skills.
                 If an empty list, no skills are loaded.
         model: Model to use - 'inherit' uses parent's model.
+        thinking_enabled: Whether to enable the model's thinking/reasoning mode for this subagent.
         max_turns: Maximum number of agent turns before stopping.
         timeout_seconds: Maximum execution time in seconds (default: 900 = 15 minutes).
     """
@@ -31,6 +32,8 @@ class SubagentConfig:
     disallowed_tools: list[str] | None = field(default_factory=lambda: ["task"])
     skills: list[str] | None = None
     model: str = "inherit"
+    # 是否为该子代理开启模型的 thinking/推理模式（默认关闭，保持内置代理行为不变）
+    thinking_enabled: bool = False
     max_turns: int = 50
     timeout_seconds: int = 900
 
