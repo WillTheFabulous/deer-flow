@@ -37,6 +37,8 @@ coverage.xml
 coverage/
 .deer-flow/
 .claude/
+# 本地 AI 记忆库（运维笔记，可能引用密钥，仅本机保留）
+memory-bank/
 skills/custom/*
 logs/
 log/
