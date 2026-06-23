@@ -3157,3 +3157,297 @@ class TestSlackMarkdownConversion:
         result = _slack_md_converter.convert("# Title")
         assert "*Title*" in result
         assert "#" not in result
+
+
+# ---------------------------------------------------------------------------
+# Memory scope tests (/memory global|default|persona)
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryScopes:
+    """验证记忆按钮拆分后三种视图选对了 (agent_name, user_id) 记忆桶。"""
+
+    @staticmethod
+    def _make_manager():
+        from app.channels.manager import ChannelManager
+
+        bus = MessageBus()
+        store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+        return ChannelManager(bus=bus, store=store)
+
+    @staticmethod
+    def _patch_memory(captured):
+        # _render_memory 在调用时才 import get_memory_data，故直接 patch 源模块属性
+        def fake_get_memory_data(agent_name=None, *, user_id=None):
+            captured["agent_name"] = agent_name
+            captured["user_id"] = user_id
+            return {}
+
+        return patch("deerflow.agents.memory.updater.get_memory_data", side_effect=fake_get_memory_data)
+
+    def test_global_scope_uses_current_user(self):
+        from deerflow.config.paths import make_safe_user_id
+
+        captured: dict = {}
+
+        async def go():
+            manager = self._make_manager()
+            msg = InboundMessage(channel_name="test", chat_id="chat1", user_id="user1", text="/memory global")
+            with self._patch_memory(captured):
+                reply = await manager._render_memory(msg, "global")
+            assert captured["agent_name"] is None
+            assert captured["user_id"] == make_safe_user_id("user1")
+            assert "当前用户全局记忆" in reply
+
+        _run(go())
+
+    def test_default_scope_uses_shared_bucket(self):
+        from deerflow.runtime.user_context import DEFAULT_USER_ID
+
+        captured: dict = {}
+
+        async def go():
+            manager = self._make_manager()
+            msg = InboundMessage(channel_name="test", chat_id="chat1", user_id="user1", text="/memory default")
+            with self._patch_memory(captured):
+                reply = await manager._render_memory(msg, "default")
+            assert captured["agent_name"] is None
+            assert captured["user_id"] == DEFAULT_USER_ID
+            assert "跨用户共享记忆" in reply
+
+        _run(go())
+
+    def test_persona_scope_custom_agent(self):
+        from deerflow.config.paths import make_safe_user_id
+
+        captured: dict = {}
+
+        async def go():
+            manager = self._make_manager()
+            manager.store.set_agent("test", "chat1", "software-team")
+            msg = InboundMessage(channel_name="test", chat_id="chat1", user_id="user1", text="/memory persona")
+            with self._patch_memory(captured):
+                reply = await manager._render_memory(msg, "persona")
+            assert captured["agent_name"] == "software-team"
+            assert captured["user_id"] == make_safe_user_id("user1")
+            assert "software-team" in reply
+
+        _run(go())
+
+    def test_persona_scope_default_persona_is_global(self):
+        captured: dict = {}
+
+        async def go():
+            manager = self._make_manager()
+            # 未设置人设 → 默认通用助手 → agent_name=None
+            msg = InboundMessage(channel_name="test", chat_id="chat1", user_id="user1", text="/memory persona")
+            with self._patch_memory(captured):
+                reply = await manager._render_memory(msg, "persona")
+            assert captured["agent_name"] is None
+            assert "通用助手即全局记忆" in reply
+
+        _run(go())
+
+    def test_global_scope_missing_user_falls_back_to_default(self):
+        from deerflow.runtime.user_context import DEFAULT_USER_ID
+
+        captured: dict = {}
+
+        async def go():
+            manager = self._make_manager()
+            msg = InboundMessage(channel_name="test", chat_id="chat1", user_id="", text="/memory global")
+            with self._patch_memory(captured):
+                await manager._render_memory(msg, "global")
+            assert captured["user_id"] == DEFAULT_USER_ID
+
+        _run(go())
+
+    def test_unknown_scope_returns_hint(self):
+        async def go():
+            manager = self._make_manager()
+            msg = InboundMessage(channel_name="test", chat_id="chat1", user_id="user1", text="/memory bogus")
+            reply = await manager._render_memory(msg, "bogus")
+            assert "global" in reply
+            assert "default" in reply
+            assert "persona" in reply
+
+        _run(go())
+
+    def test_persona_to_agent_name_mapping(self):
+        from app.channels.memory_view import persona_to_agent_name
+
+        assert persona_to_agent_name("lead_agent") is None
+        assert persona_to_agent_name("") is None
+        assert persona_to_agent_name(None) is None
+        assert persona_to_agent_name("software-team") == "software-team"
+        assert persona_to_agent_name("Software_Team") == "software-team"
+
+    def test_feishu_menu_map_has_memory_scopes(self):
+        from app.channels.feishu import FeishuChannel
+
+        menu = FeishuChannel._MENU_COMMAND_MAP
+        assert menu["MEMORY"] == "/memory"
+        assert menu["MEMORY_GLOBAL"] == "/memory global"
+        assert menu["MEMORY_DEFAULT"] == "/memory default"
+        assert menu["MEMORY_PERSONA"] == "/memory persona"
+
+
+# ---------------------------------------------------------------------------
+# Session model override tests (store + run_config injection + /model command)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionModel:
+    """验证按会话切换模型：store 持久化、run_config 注入、/model 文本命令。"""
+
+    @staticmethod
+    def _make_manager():
+        from app.channels.manager import ChannelManager
+
+        bus = MessageBus()
+        store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+        return ChannelManager(bus=bus, store=store)
+
+    def test_store_model_roundtrip(self):
+        store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+        assert store.get_model("test", "chat1") is None
+        store.set_model("test", "chat1", "gpt-x")
+        assert store.get_model("test", "chat1") == "gpt-x"
+        # 设置模型不应破坏已有的人设字段
+        store.set_agent("test", "chat1", "software-team")
+        store.set_model("test", "chat1", "gpt-y")
+        assert store.get_agent("test", "chat1") == "software-team"
+        assert store.get_model("test", "chat1") == "gpt-y"
+        assert store.clear_model("test", "chat1") is True
+        assert store.get_model("test", "chat1") is None
+        # 人设仍在
+        assert store.get_agent("test", "chat1") == "software-team"
+        assert store.clear_model("test", "chat1") is False
+
+    def test_resolve_run_params_injects_model(self):
+        manager = self._make_manager()
+        msg = InboundMessage(channel_name="test", chat_id="chat1", user_id="user1", text="hi")
+
+        _aid, run_config, _ctx = manager._resolve_run_params(msg, "tid-1")
+        assert "model_name" not in run_config["configurable"]
+
+        manager.store.set_model("test", "chat1", "gpt-x")
+        _aid, run_config, _ctx = manager._resolve_run_params(msg, "tid-1")
+        assert run_config["configurable"]["model_name"] == "gpt-x"
+
+    def test_model_command_switch_and_clear(self):
+        from app.channels.manager import ChannelManager
+
+        manager = self._make_manager()
+        msg = InboundMessage(channel_name="test", chat_id="chat1", user_id="user1", text="/model")
+
+        models = [("m-default", "Default"), ("m-fast", "Fast")]
+        with patch.object(ChannelManager, "_available_models", staticmethod(lambda: models)):
+            # 无参数：列出当前（默认）+ 可选
+            listing = manager._handle_model_command(msg, "")
+            assert "m-default" in listing and "m-fast" in listing
+
+            # 切换到非默认模型 → 持久化
+            reply = manager._handle_model_command(msg, "m-fast")
+            assert "m-fast" in reply
+            assert manager.store.get_model("test", "chat1") == "m-fast"
+
+            # 切到默认模型 → 清除覆盖
+            manager._handle_model_command(msg, "m-default")
+            assert manager.store.get_model("test", "chat1") is None
+
+            # 无效模型 → 提示
+            manager.store.set_model("test", "chat1", "m-fast")
+            invalid = manager._handle_model_command(msg, "nope")
+            assert "无效的模型" in invalid
+
+            # 显式清除
+            manager._handle_model_command(msg, "clear")
+            assert manager.store.get_model("test", "chat1") is None
+
+
+# ---------------------------------------------------------------------------
+# Feishu interactive card tests (memory chooser + model selector)
+# ---------------------------------------------------------------------------
+
+
+class TestFeishuMemoryModelCards:
+    """验证飞书记忆卡 / 模型卡的构建与回调动作（不触发 lark 网络）。"""
+
+    @staticmethod
+    def _iter_buttons(card: dict):
+        for el in card["elements"]:
+            if el.get("tag") == "action":
+                yield from el["actions"]
+
+    def test_build_memory_card_chooser(self):
+        from app.channels.feishu import FeishuChannel
+
+        card = FeishuChannel._build_memory_card()
+        actions = [b["value"]["action"] for b in self._iter_buttons(card)]
+        scopes = [b["value"]["scope"] for b in self._iter_buttons(card) if b["value"]["action"] == "view_memory"]
+        assert actions.count("view_memory") == 3
+        assert set(scopes) == {"global", "default", "persona"}
+        # 选择卡（无 body）不应包含正文 markdown 分隔
+        assert all(el.get("tag") != "hr" for el in card["elements"])
+
+    def test_build_memory_card_with_body_highlights_active(self):
+        from app.channels.feishu import FeishuChannel
+
+        card = FeishuChannel._build_memory_card(active_scope="persona", body="记忆事实（共 1 条）：\n1. 喜欢简洁")
+        markdowns = [el["content"] for el in card["elements"] if el.get("tag") == "markdown"]
+        assert any("喜欢简洁" in m for m in markdowns)
+        active = [b for b in self._iter_buttons(card) if b["value"].get("scope") == "persona"]
+        assert active and active[0]["type"] == "primary"
+
+    def test_build_model_card_highlights_current(self):
+        from app.channels.feishu import FeishuChannel
+
+        models = [("m-default", "Default"), ("m-fast", "Fast")]
+        card = FeishuChannel._build_model_card("m-fast", models)
+        set_buttons = [b for b in self._iter_buttons(card) if b["value"]["action"] == "set_model"]
+        assert {b["value"]["name"] for b in set_buttons} == {"m-default", "m-fast"}
+        current = [b for b in set_buttons if b["value"]["name"] == "m-fast"]
+        assert current and current[0]["type"] == "primary"
+        assert any(b["value"]["action"] == "clear_model" for b in self._iter_buttons(card))
+
+    def test_apply_model_action_set_and_clear(self):
+        from app.channels.feishu import FeishuChannel
+
+        bus = MessageBus()
+        store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+        ch = FeishuChannel(bus, config={})
+        models = [("m-default", "Default"), ("m-fast", "Fast")]
+
+        with patch.object(FeishuChannel, "_list_models", staticmethod(lambda: models)):
+            # 切到非默认模型 → 持久化
+            toast = ch._apply_model_action(store, "chat1", "set_model", {"name": "m-fast"})
+            assert toast and toast["type"] == "success"
+            assert store.get_model(ch.name, "chat1") == "m-fast"
+
+            # 选默认模型 → 清除覆盖
+            ch._apply_model_action(store, "chat1", "set_model", {"name": "m-default"})
+            assert store.get_model(ch.name, "chat1") is None
+
+            # 无效模型 → None
+            assert ch._apply_model_action(store, "chat1", "set_model", {"name": "nope"}) is None
+
+            # 显式清除
+            store.set_model(ch.name, "chat1", "m-fast")
+            toast = ch._apply_model_action(store, "chat1", "clear_model", {})
+            assert toast and toast["type"] == "info"
+            assert store.get_model(ch.name, "chat1") is None
+
+    def test_card_action_open_id_extraction(self):
+        from app.channels.feishu import FeishuChannel
+
+        # 形态一：operator.open_id
+        ev1 = SimpleNamespace(operator=SimpleNamespace(open_id="ou_direct"))
+        assert FeishuChannel._card_action_open_id(ev1) == "ou_direct"
+
+        # 形态二：operator.operator_id.open_id（与 bot menu 一致）
+        ev2 = SimpleNamespace(operator=SimpleNamespace(open_id=None, operator_id=SimpleNamespace(open_id="ou_nested")))
+        assert FeishuChannel._card_action_open_id(ev2) == "ou_nested"
+
+        # 无 operator → None
+        assert FeishuChannel._card_action_open_id(SimpleNamespace(operator=None)) is None

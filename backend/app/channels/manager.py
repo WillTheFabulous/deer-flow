@@ -15,6 +15,7 @@ import httpx
 from langgraph_sdk.errors import ConflictError
 
 from app.channels.commands import KNOWN_CHANNEL_COMMANDS
+from app.channels.memory_view import format_memory, render_memory
 from app.channels.message_bus import (
     PENDING_CLARIFICATION_METADATA_KEY,
     InboundMessage,
@@ -27,7 +28,7 @@ from app.channels.store import ChannelStore
 from app.gateway.csrf_middleware import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, generate_csrf_token
 from app.gateway.internal_auth import create_internal_auth_headers
 from deerflow.config.paths import make_safe_user_id
-from deerflow.runtime.user_context import get_effective_user_id
+from deerflow.runtime.user_context import DEFAULT_USER_ID, get_effective_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +256,67 @@ def _response_metadata(base_metadata: dict[str, Any], *, pending_clarification: 
     metadata = _slim_metadata(base_metadata)
     if pending_clarification:
         metadata[PENDING_CLARIFICATION_METADATA_KEY] = True
+    return metadata
+
+
+def _extract_todos(result: dict | list) -> list[dict[str, Any]] | None:
+    """Extract the current todo list from a graph state snapshot/result.
+
+    Plan mode 下 lead agent 通过 write_todos 把流水线写入 ThreadState.todos，
+    这里从 values 快照中取出，供渠道渲染进度。
+    """
+    if isinstance(result, dict):
+        todos = result.get("todos")
+        if isinstance(todos, list):
+            return [t for t in todos if isinstance(t, dict)]
+    return None
+
+
+# task 工具发出的 custom 事件 type -> 展示用状态
+_CUSTOM_PROGRESS_STATUS = {
+    "task_started": "running",
+    "task_running": "running",
+    "task_completed": "completed",
+    "task_failed": "failed",
+    "task_timed_out": "failed",
+    "task_cancelled": "cancelled",
+}
+
+
+def _apply_custom_progress_event(running_steps: dict[str, dict[str, str]], data: Any) -> None:
+    """把 task 工具的 custom 流事件（task_started/running/completed...）折叠进子任务进度。"""
+    if not isinstance(data, Mapping):
+        return
+    event_type = data.get("type")
+    status = _CUSTOM_PROGRESS_STATUS.get(event_type) if isinstance(event_type, str) else None
+    if status is None:
+        return
+    task_id = data.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        return
+    description = data.get("description")
+    step = running_steps.get(task_id)
+    if step is None:
+        running_steps[task_id] = {
+            "description": description if isinstance(description, str) and description else "子任务",
+            "status": status,
+        }
+    else:
+        step["status"] = status
+        if isinstance(description, str) and description and step.get("description") in (None, "", "子任务"):
+            step["description"] = description
+
+
+def _attach_progress_metadata(
+    metadata: dict[str, Any],
+    todos: list[dict[str, Any]] | None,
+    running_steps: dict[str, dict[str, str]],
+) -> dict[str, Any]:
+    """把 todos 与子任务进度写进 outbound metadata，供渠道（飞书卡片）渲染。"""
+    if todos is not None:
+        metadata["todos"] = todos
+    if running_steps:
+        metadata["pipeline_steps"] = [{"description": s.get("description", ""), "status": s.get("status", "")} for s in running_steps.values()]
     return metadata
 
 
@@ -595,6 +657,9 @@ def _format_uploaded_files_block(files: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+# 记忆文本格式化与范围渲染统一由 app.channels.memory_view 提供（文本命令与飞书卡片共用）。
+
+
 class ChannelManager:
     """Core dispatcher that bridges IM channels to the DeerFlow agent.
 
@@ -649,7 +714,11 @@ class ChannelManager:
     def _resolve_run_params(self, msg: InboundMessage, thread_id: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
         channel_layer, user_layer = self._resolve_session_layer(msg)
 
-        assistant_id = user_layer.get("assistant_id") or channel_layer.get("assistant_id") or self._default_session.get("assistant_id") or self._assistant_id
+        # 会话级人设（/agent 菜单选择，按 channel:chat_id 记忆）优先级最高，
+        # 其次才是渠道/用户/全局默认会话配置。
+        stored_agent = self.store.get_agent(msg.channel_name, msg.chat_id)
+
+        assistant_id = stored_agent or user_layer.get("assistant_id") or channel_layer.get("assistant_id") or self._default_session.get("assistant_id") or self._assistant_id
         if not isinstance(assistant_id, str) or not assistant_id.strip():
             assistant_id = self._assistant_id
 
@@ -670,6 +739,12 @@ class ChannelManager:
         # turns continue from the same conversation checkpoint.
         configurable["checkpoint_ns"] = ""
         configurable["thread_id"] = thread_id
+
+        # 会话级模型覆盖（/model 或飞书模型卡选择，按 channel:chat_id 记忆）。
+        # 仅注入；无效/失效的模型名由 lead_agent._resolve_model_name 安全回退默认模型。
+        stored_model = self.store.get_model(msg.channel_name, msg.chat_id)
+        if stored_model:
+            configurable["model_name"] = stored_model
 
         # ``user_id`` drives user-scoped filesystem buckets that only accept
         # ``[A-Za-z0-9_-]``, so normalize the channel id and keep the raw value
@@ -809,6 +884,12 @@ class ChannelManager:
     async def _handle_chat(self, msg: InboundMessage, extra_context: dict[str, Any] | None = None) -> None:
         client = self._get_client()
 
+        # 会话设置过工作目录（/repo）时，在消息前注入目录上下文，
+        # 让 lead agent 与角色子代理默认在该目录操作。
+        workdir = self.store.get_workdir(msg.channel_name, msg.chat_id)
+        if workdir:
+            msg.text = f"[当前工作目录：{workdir}。未明确指定其他路径时，所有代码/文件操作均在此目录进行。]\n\n{msg.text}"
+
         # Look up existing DeerFlow thread.
         # topic_id may be None (e.g. Telegram private chats) — the store
         # handles this by using the "channel:chat_id" key without a topic suffix.
@@ -919,6 +1000,10 @@ class ChannelManager:
         last_published_text = ""
         last_publish_at = 0.0
         stream_error: BaseException | None = None
+        # plan mode / 流水线进度：todos 来自 values 快照，子任务步骤来自 task 工具的 custom 事件
+        latest_todos: list[dict[str, Any]] | None = None
+        running_steps: dict[str, dict[str, str]] = {}
+        last_published_progress = ""
 
         try:
             async for chunk in client.runs.stream(
@@ -927,7 +1012,7 @@ class ChannelManager:
                 input={"messages": [{"role": "human", "content": msg.text}]},
                 config=run_config,
                 context=run_context,
-                stream_mode=["messages-tuple", "values"],
+                stream_mode=["messages-tuple", "values", "custom"],
                 multitask_strategy="reject",
             ):
                 event = getattr(chunk, "event", "")
@@ -939,15 +1024,26 @@ class ChannelManager:
                         latest_text = accumulated_text
                 elif event == "values" and isinstance(data, (dict, list)):
                     last_values = data
+                    todos = _extract_todos(data)
+                    if todos is not None:
+                        latest_todos = todos
                     snapshot_text = _extract_response_text(data)
                     if snapshot_text:
                         latest_text = snapshot_text
+                elif event == "custom":
+                    _apply_custom_progress_event(running_steps, data)
 
-                if not latest_text or latest_text == last_published_text:
+                # 文本或进度任一变化即推送（进度可在尚无文本时先行展示）
+                progress_signature = repr((latest_todos, [(tid, s.get("status")) for tid, s in running_steps.items()]))
+                text_changed = bool(latest_text) and latest_text != last_published_text
+                progress_changed = progress_signature != last_published_progress
+                if not (text_changed or progress_changed):
+                    continue
+                if not latest_text and latest_todos is None and not running_steps:
                     continue
 
                 now = time.monotonic()
-                if last_published_text and now - last_publish_at < STREAM_UPDATE_MIN_INTERVAL_SECONDS:
+                if (last_published_text or last_published_progress) and now - last_publish_at < STREAM_UPDATE_MIN_INTERVAL_SECONDS:
                     continue
 
                 await self.bus.publish_outbound(
@@ -958,10 +1054,11 @@ class ChannelManager:
                         text=latest_text,
                         is_final=False,
                         thread_ts=msg.thread_ts,
-                        metadata=_response_metadata(msg.metadata),
+                        metadata=_attach_progress_metadata(_response_metadata(msg.metadata), latest_todos, running_steps),
                     )
                 )
                 last_published_text = latest_text
+                last_published_progress = progress_signature
                 last_publish_at = now
         except Exception as exc:
             stream_error = exc
@@ -974,6 +1071,9 @@ class ChannelManager:
             response_text = _extract_response_text(result)
             pending_clarification = _has_current_turn_clarification(result)
             artifacts = _extract_artifacts(result)
+            final_todos = _extract_todos(result)
+            if final_todos is not None:
+                latest_todos = final_todos
             response_text, attachments = _prepare_artifact_delivery(thread_id, response_text, artifacts)
 
             if not response_text:
@@ -1004,7 +1104,11 @@ class ChannelManager:
                     attachments=attachments,
                     is_final=True,
                     thread_ts=msg.thread_ts,
-                    metadata=_response_metadata(msg.metadata, pending_clarification=pending_clarification),
+                    metadata=_attach_progress_metadata(
+                        _response_metadata(msg.metadata, pending_clarification=pending_clarification),
+                        latest_todos,
+                        running_steps,
+                    ),
                 )
             )
 
@@ -1036,21 +1140,36 @@ class ChannelManager:
                 user_id=msg.user_id,
             )
             reply = "New conversation started."
+        elif command == "repo":
+            reply = self._handle_repo_command(msg, parts[1].strip() if len(parts) > 1 else "")
+        elif command == "agent":
+            reply = self._handle_agent_command(msg, parts[1].strip() if len(parts) > 1 else "")
         elif command == "status":
             thread_id = self.store.get_thread_id(msg.channel_name, msg.chat_id, topic_id=msg.topic_id)
             reply = f"Active thread: {thread_id}" if thread_id else "No active conversation."
+            workdir = self.store.get_workdir(msg.channel_name, msg.chat_id)
+            reply += f"\n当前工作目录：{workdir}" if workdir else "\n当前工作目录：未设置（用 /repo 选择）"
+            reply += f"\n当前人设：{self._current_persona_label(msg)}"
         elif command == "models":
             reply = await self._fetch_gateway("/api/models", "models")
+        elif command == "model":
+            reply = self._handle_model_command(msg, parts[1].strip() if len(parts) > 1 else "")
         elif command == "memory":
-            reply = await self._fetch_gateway("/api/memory", "memory")
+            # /memory [global|default|persona]，无参数默认查看当前用户全局记忆
+            scope = parts[1].strip().lower() if len(parts) > 1 else "global"
+            reply = await self._render_memory(msg, scope)
         elif command == "help":
             reply = (
                 "Available commands:\n"
                 "/bootstrap — Start a bootstrap session (enables agent setup)\n"
                 "/new — Start a new conversation\n"
+                "/repo — 选择/查看当前工作目录（/repo <名称> 直接设置，/repo clear 清除）\n"
+                "/agent — 选择/查看当前人设（/agent <名称> 直接切换，/agent default 恢复通用助手）\n"
                 "/status — Show current thread info\n"
                 "/models — List available models\n"
-                "/memory — Show memory status\n"
+                "/model — 选择/查看当前模型（/model <名称> 直接切换，/model default 恢复默认）\n"
+                "/memory — 查看记忆（默认 = 当前用户全局记忆）\n"
+                "/memory global|default|persona — 分别查看 当前用户全局 / 跨用户共享 default 桶 / 当前用户+当前人设 记忆\n"
                 "/help — Show this help"
             )
         else:
@@ -1066,6 +1185,143 @@ class ChannelManager:
             metadata=_slim_metadata(msg.metadata),
         )
         await self.bus.publish_outbound(outbound)
+
+    def _handle_repo_command(self, msg: InboundMessage, arg: str) -> str:
+        """处理 /repo 命令的通用文本逻辑（飞书无参数时由渠道层改发交互卡片）。"""
+        from app.channels.workdir import list_project_workdirs, normalize_workdir
+
+        if arg.lower() == "clear":
+            cleared = self.store.clear_workdir(msg.channel_name, msg.chat_id)
+            return "已清除工作目录设置。" if cleared else "当前未设置工作目录。"
+
+        if arg:
+            workdir = normalize_workdir(arg)
+            if workdir is None:
+                available = list_project_workdirs()
+                hint = "\n".join(f"• {p}" for p in available) if available else "（项目目录为空）"
+                return f"无效的工作目录：{arg}\n可选目录：\n{hint}"
+            self.store.set_workdir(msg.channel_name, msg.chat_id, workdir)
+            return f"工作目录已设置为：{workdir}"
+
+        # 无参数：文本式列出当前设置、历史与全部可选目录
+        current = self.store.get_workdir(msg.channel_name, msg.chat_id)
+        history = self.store.get_workdir_history(msg.channel_name, msg.chat_id)
+        available = list_project_workdirs()
+
+        lines = [f"当前工作目录：{current or '未设置'}"]
+        recent = [h for h in history if h != current][:5]
+        if recent:
+            lines.append("\n最近使用：")
+            lines.extend(f"• {p}" for p in recent)
+        lines.append("\n全部可选：")
+        if available:
+            lines.extend(f"• {p}" for p in available)
+        else:
+            lines.append("（项目目录为空，把代码放到宿主机 /work/projects/ 下）")
+        lines.append("\n用 /repo <名称或路径> 设置，/repo clear 清除。")
+        return "\n".join(lines)
+
+    def _effective_persona(self, msg: InboundMessage) -> str:
+        """返回该会话当前生效的人设名（会话已选 > config 默认）。"""
+        stored = self.store.get_agent(msg.channel_name, msg.chat_id)
+        if stored:
+            return stored
+        default_id = self._default_session.get("assistant_id") or self._assistant_id
+        return default_id if isinstance(default_id, str) and default_id.strip() else self._assistant_id
+
+    @staticmethod
+    def _persona_label(name: str) -> str:
+        from app.channels.personas import DEFAULT_PERSONA, DEFAULT_PERSONA_LABEL
+
+        return DEFAULT_PERSONA_LABEL if name == DEFAULT_PERSONA or name == DEFAULT_ASSISTANT_ID else name
+
+    def _current_persona_label(self, msg: InboundMessage) -> str:
+        return self._persona_label(self._effective_persona(msg))
+
+    async def _render_memory(self, msg: InboundMessage, scope: str) -> str:
+        """按 scope 读取并渲染记忆（委托给 memory_view 共享实现）。
+
+        - global：当前用户全局记忆（agent_name=None, user_id=当前用户）
+        - default：跨用户共享 default 桶（agent_name=None, user_id=default）
+        - persona：当前用户 + 当前人设记忆（agent_name=当前人设, user_id=当前用户）
+        """
+        # 无 msg.user_id 时回落 DEFAULT_USER_ID，与实际 run 的 user_id 解析行为一致
+        current_user_id = make_safe_user_id(msg.user_id) if msg.user_id else DEFAULT_USER_ID
+        persona = self._effective_persona(msg)
+        # render_memory 内部为同步文件 IO，放到线程池避免阻塞事件循环
+        return await asyncio.to_thread(render_memory, scope, user_id=current_user_id, persona=persona)
+
+    def _handle_agent_command(self, msg: InboundMessage, arg: str) -> str:
+        """处理 /agent 命令的通用文本逻辑（飞书无参数时由渠道层改发交互卡片）。"""
+        from app.channels.personas import DEFAULT_PERSONA, DEFAULT_PERSONA_LABEL, list_personas, normalize_persona
+
+        if arg.lower() in ("clear", "default", "reset"):
+            self.store.clear_agent(msg.channel_name, msg.chat_id)
+            return f"已恢复默认人设：{DEFAULT_PERSONA_LABEL}"
+
+        if arg:
+            persona = normalize_persona(arg)
+            if persona is None:
+                hint = "\n".join(f"• {label}（{name}）" for name, label, _desc in list_personas())
+                return f"无效的人设：{arg}\n可选人设：\n{hint}"
+            # 选默认人设时清除覆盖即可（回落到 config 默认）
+            if persona == DEFAULT_PERSONA:
+                self.store.clear_agent(msg.channel_name, msg.chat_id)
+                return f"人设已切换为：{DEFAULT_PERSONA_LABEL}"
+            self.store.set_agent(msg.channel_name, msg.chat_id, persona)
+            return f"人设已切换为：{persona}"
+
+        # 无参数：文本式列出当前与全部可选人设
+        current_name = self._effective_persona(msg)
+        lines = [f"当前人设：{self._persona_label(current_name)}", "\n可选人设："]
+        for name, label, desc in list_personas():
+            mark = " ✓" if name == current_name else ""
+            suffix = f" — {desc}" if desc else ""
+            lines.append(f"• {label}（{name}）{mark}{suffix}")
+        lines.append("\n用 /agent <名称> 切换，/agent default 恢复通用助手。")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _available_models() -> list[tuple[str, str | None]]:
+        """返回 (name, display_name) 列表，首个为默认模型；失败时返回空列表（不阻塞渠道）。"""
+        try:
+            from deerflow.config.app_config import get_app_config
+
+            return [(m.name, getattr(m, "display_name", None)) for m in get_app_config().models]
+        except Exception:
+            logger.debug("list models failed", exc_info=True)
+            return []
+
+    def _handle_model_command(self, msg: InboundMessage, arg: str) -> str:
+        """处理 /model 命令的通用文本逻辑（飞书无参数时由渠道层改发交互卡片）。"""
+        models = self._available_models()
+        default_name = models[0][0] if models else None
+
+        if arg.lower() in ("clear", "default", "reset"):
+            self.store.clear_model(msg.channel_name, msg.chat_id)
+            return f"已恢复默认模型：{default_name or '（未配置）'}"
+
+        if arg:
+            target = next((name for name, _label in models if name.lower() == arg.lower()), None)
+            if target is None:
+                hint = "\n".join(f"• {name}（{label}）" if label and label != name else f"• {name}" for name, label in models) or "（未配置模型）"
+                return f"无效的模型：{arg}\n可选模型：\n{hint}"
+            # 选默认模型即清除覆盖（回落到 config 默认）
+            if default_name is not None and target == default_name:
+                self.store.clear_model(msg.channel_name, msg.chat_id)
+            else:
+                self.store.set_model(msg.channel_name, msg.chat_id, target)
+            return f"模型已切换：{target}"
+
+        # 无参数：文本式列出当前与全部可选模型
+        current = self.store.get_model(msg.channel_name, msg.chat_id) or default_name
+        lines = [f"当前模型：{current or '（未配置）'}", "\n可选模型："]
+        for name, label in models:
+            mark = " ✓" if name == current else ""
+            suffix = f" — {label}" if label and label != name else ""
+            lines.append(f"• {name}{mark}{suffix}")
+        lines.append("\n用 /model <名称> 切换，/model default 恢复默认。")
+        return "\n".join(lines)
 
     async def _fetch_gateway(self, path: str, kind: str) -> str:
         """Fetch data from the Gateway API for command responses."""
@@ -1088,8 +1344,7 @@ class ChannelManager:
             names = [m["name"] for m in data.get("models", [])]
             return ("Available models:\n" + "\n".join(f"• {n}" for n in names)) if names else "No models configured."
         elif kind == "memory":
-            facts = data.get("facts", [])
-            return f"Memory contains {len(facts)} fact(s)."
+            return format_memory(data)
         return str(data)
 
     # -- error helper ------------------------------------------------------
