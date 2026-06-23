@@ -161,6 +161,27 @@ services:
         read_only: true
         bind:
           create_host_path: true
+      # Cursor CLI（cursor-agent）：持久化二进制与登录态，容器重建不丢
+      - type: bind
+        source: ${HOME:?HOME must be set}/.cursor-cli
+        target: /root/.cursor
+        read_only: false
+        bind:
+          create_host_path: true
+      # 代码仓库目录：cursor-agent 的工作区（经 sandbox.mounts 暴露为 /mnt/projects）
+      - type: bind
+        source: ${DEER_FLOW_PROJECTS_DIR:-/work/projects}
+        target: /projects
+        read_only: false
+        bind:
+          create_host_path: true
+      # 额外项目根目录：宿主机 /prod_data（经 sandbox.mounts 暴露为 /mnt/prod_data）
+      - type: bind
+        source: ${DEER_FLOW_EXTRA_PROJECTS_DIR:-/prod_data}
+        target: /prod_data
+        read_only: false
+        bind:
+          create_host_path: true
     working_dir: /app
     environment:
       - CI=true

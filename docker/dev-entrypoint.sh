@@ -64,6 +64,25 @@ if [ -n "$EXTRAS_FLAGS" ]; then
     echo "[startup] uv extras:$EXTRAS_FLAGS"
 fi
 
+# ── Cursor CLI ──────────────────────────────────────────────────────────────
+# /root/.cursor 由 compose 从宿主机 ~/.cursor-cli 挂载。生成代理 wrapper 而非软链：
+# cursor-agent 必须走宿主机 clash 代理才能拿到完整订阅模型列表；
+# 定向代理只影响 cursor-agent，不影响豆包（Ark 国内直连）与飞书 WS。
+# 代理地址可用 CURSOR_AGENT_PROXY 覆盖（默认宿主机 clash 7890）。
+if [ -x /root/.cursor/bin/cursor-agent ]; then
+    # 必须先删除旧软链：cat > 会跟随软链写穿到真实二进制，造成自我覆盖
+    rm -f /usr/local/bin/cursor-agent /usr/local/bin/agent
+    cat > /usr/local/bin/cursor-agent <<'WRAPPER'
+#!/bin/sh
+export HTTP_PROXY="${CURSOR_AGENT_PROXY:-http://host.docker.internal:7890}"
+export HTTPS_PROXY="$HTTP_PROXY"
+export NO_PROXY="localhost,127.0.0.1"
+exec /root/.cursor/bin/cursor-agent "$@"
+WRAPPER
+    chmod +x /usr/local/bin/cursor-agent
+    ln -sf /usr/local/bin/cursor-agent /usr/local/bin/agent 2>/dev/null || true
+fi
+
 # Keep runtime-owned files out of uvicorn's reload watcher. Each excluded path
 # must exist before uvicorn starts so watchfiles treats it as an excluded
 # directory, not as a plain glob pattern — on Python 3.12, globbing an absolute

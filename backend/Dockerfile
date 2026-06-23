@@ -26,6 +26,7 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
 # Install build tools + Node.js (build-essential needed for native Python extensions)
 RUN apt-get update && apt-get install -y \
     curl \
+    git \
     build-essential \
     gnupg \
     ca-certificates \
