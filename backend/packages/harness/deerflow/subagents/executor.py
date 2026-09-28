@@ -47,7 +47,7 @@ from deerflow.subagents.capacity import (
     SubagentExecutionCapacity,
     get_subagent_execution_capacity,
 )
-from deerflow.subagents.config import SubagentConfig, resolve_subagent_model_name
+from deerflow.subagents.config import SubagentConfig, resolve_subagent_model_name, resolve_subagent_thinking_enabled
 from deerflow.subagents.context_snapshot import SNAPSHOT_SYSTEM_NOTE, ParentContextSnapshot
 from deerflow.subagents.report_contract import (
     build_acceptance_criteria_system_note,
@@ -979,7 +979,8 @@ class SubagentExecutor:
         app_config = self._get_resolved_app_config()
         if self.model_name is None:
             self.model_name = resolve_subagent_model_name(self.config, self.parent_model, app_config=app_config)
-        model = create_chat_model(name=self.model_name, thinking_enabled=False, app_config=app_config, attach_tracing=False)
+        thinking_enabled = resolve_subagent_thinking_enabled(self.config, self.model_name, app_config=app_config)
+        model = create_chat_model(name=self.model_name, thinking_enabled=thinking_enabled, app_config=app_config, attach_tracing=False)
 
         from deerflow.agents.middlewares.tool_error_handling_middleware import build_subagent_runtime_middlewares
 
@@ -1116,12 +1117,13 @@ class SubagentExecutor:
                     supports_vision=False,
                 )
             deferred_names = deferred_setup.deferred_names if deferred_setup is not None else frozenset()
-            # Subagents request thinking off; the model's reasoning contract
-            # decides what that means (a required-thinking model stays on), and
-            # the descriptor reports the effective policy the factory applied.
+            # Subagents request thinking per SubagentConfig.thinking_enabled (off
+            # by default); the model's reasoning contract decides what that means
+            # (a required-thinking model stays on), and the descriptor reports
+            # the effective policy the factory applied.
             from deerflow.models.reasoning import resolve_reasoning_contract, resolve_reasoning_request
 
-            effective_reasoning = resolve_reasoning_request(resolve_reasoning_contract(model_config), thinking_enabled=False, reasoning_effort=None)
+            effective_reasoning = resolve_reasoning_request(resolve_reasoning_contract(model_config), thinking_enabled=self.config.thinking_enabled, reasoning_effort=None)
             descriptor = build_assembly_descriptor(
                 namespace="deerflow",
                 agent_name=self.config.name,

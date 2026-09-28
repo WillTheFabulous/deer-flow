@@ -1,5 +1,6 @@
 """Subagent configuration definitions."""
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -7,6 +8,8 @@ from deerflow.config.prompt_overlay import PromptOverlay
 
 if TYPE_CHECKING:
     from deerflow.config.app_config import AppConfig
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -24,6 +27,8 @@ class SubagentConfig:
                 disabled for this subagent. Skill bodies and their allowed-tools
                 policies take effect only after activation/loading at runtime.
         model: Model to use - 'inherit' uses parent's model.
+        thinking_enabled: Request the model's thinking/reasoning mode for this
+            subagent. Falls back to off when the resolved model cannot think.
         max_turns: Maximum agent turns — model call plus the tools it runs —
             before stopping. Built-in agents use the value set here
             (general-purpose=150, bash=60) unless the global
@@ -45,6 +50,8 @@ class SubagentConfig:
     disallowed_tools: list[str] | None = field(default_factory=lambda: ["task"])
     skills: list[str] | None = None
     model: str = "inherit"
+    # 是否为该子代理开启模型的 thinking/推理模式（默认关闭，保持内置代理行为不变）
+    thinking_enabled: bool = False
     max_turns: int = 50
     timeout_seconds: int = 900
     prompt_overlay: PromptOverlay = field(default_factory=PromptOverlay)
@@ -69,3 +76,21 @@ def resolve_subagent_model_name(config: SubagentConfig, parent_model: str | None
 
         app_config = get_app_config()
     return _default_model_name(app_config)
+
+
+def resolve_subagent_thinking_enabled(config: SubagentConfig, model_name: str | None, *, app_config: "AppConfig") -> bool:
+    """Return the thinking flag a subagent should request for its model.
+
+    Honors ``config.thinking_enabled`` but falls back to off when the resolved
+    model cannot think: legacy model profiles make ``create_chat_model`` raise
+    on that combination instead of degrading.
+    """
+    if not config.thinking_enabled:
+        return False
+    from deerflow.models.reasoning import resolve_reasoning_contract
+
+    model_config = app_config.get_model_config(model_name) if model_name else None
+    if model_config is None or not resolve_reasoning_contract(model_config).supports_thinking:
+        logger.warning("Subagent %s requested thinking but model '%s' does not support it; falling back to non-thinking mode", config.name, model_name)
+        return False
+    return True

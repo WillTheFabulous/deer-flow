@@ -1917,6 +1917,7 @@ subagent_runtime:
 #       # token_budget:        # per-agent override of the global token_budget above
 #       #   max_tokens: 3000000  # raise the ceiling for deep-research tasks
 #       # model: qwen3:32b     # Use a specific model (default: inherit from lead agent)
+#       # thinking_enabled: true  # Request the model's thinking mode (falls back to off if the model cannot think)
 #       # skills:               # Skill discovery/activation allowlist (default: all enabled)
 #       #   - web-search
 #       #   - data-analysis
@@ -1944,6 +1945,7 @@ subagent_runtime:
 #   #       - data-analysis
 #   #       - visualization
 #   #     model: inherit          # 'inherit' uses parent's model
+#   #     thinking_enabled: false # Request the model's thinking mode (falls back to off if the model cannot think)
 #   #     max_turns: 80
 #   #     timeout_seconds: 600
 #
