@@ -1,0 +1,37 @@
+# DeerFlow fork — Cursor CLI（cursor-agent）叠加文件，仅用于 dev 栈
+#
+# scripts/docker.sh 在 dev 栈下检测到本文件会自动叠加；设 DEER_FLOW_CURSOR_AGENT=0 可关闭。
+# 手动使用（在 docker/ 目录内）：
+#   DEER_FLOW_ROOT=$(cd .. && pwd) docker compose -p deer-flow-dev \
+#     -f docker-compose-dev.yaml -f docker-compose.cursor-agent.yaml up -d gateway
+#
+# 作用：
+#   - 宿主 ~/.cursor-cli → /root/.cursor：持久化 cursor-agent 二进制与登录态，容器重建不丢
+#   - 项目根目录 → /projects、/prod_data：cursor-agent 的工作区，
+#     再由 config.yaml 的 sandbox.mounts 暴露给 agent（/mnt/projects、/mnt/prod_data）
+#   - 启动前运行 cursor-agent-setup.sh 生成定向代理 wrapper，然后交给上游 dev-entrypoint.sh
+#
+# 新增项目根目录时三处必须一致：这里的 bind、config.yaml sandbox.mounts、然后 force-recreate gateway。
+services:
+  gateway:
+    command:
+      - sh
+      - -c
+      - sh /usr/local/bin/cursor-agent-setup.sh || echo "[cursor-agent] setup failed, continuing"; exec sh /usr/local/bin/dev-entrypoint.sh
+    volumes:
+      - ./cursor-agent-setup.sh:/usr/local/bin/cursor-agent-setup.sh:ro
+      - type: bind
+        source: ${HOME:?HOME must be set}/.cursor-cli
+        target: /root/.cursor
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${DEER_FLOW_PROJECTS_DIR:-/work/projects}
+        target: /projects
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${DEER_FLOW_EXTRA_PROJECTS_DIR:-/prod_data}
+        target: /prod_data
+        bind:
+          create_host_path: true

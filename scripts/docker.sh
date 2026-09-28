@@ -25,6 +25,12 @@ COMPOSE_BIN=(docker compose)
 
 _refresh_compose_cmd() {
     COMPOSE_CMD="${COMPOSE_BIN[*]} -p ${COMPOSE_PROJECT} -f ${COMPOSE_FILE}"
+    # Fork：dev 栈自动叠加 cursor-agent（见 docker/docker-compose.cursor-agent.yaml）。
+    # 放在这里是因为 start/stop/restart/logs 都经由本函数重建 COMPOSE_CMD；设 DEER_FLOW_CURSOR_AGENT=0 关闭。
+    if [ "$COMPOSE_FILE" = "docker-compose-dev.yaml" ] && [ "${DEER_FLOW_CURSOR_AGENT:-1}" != "0" ] \
+        && [ -f "$DOCKER_DIR/docker-compose.cursor-agent.yaml" ]; then
+        COMPOSE_CMD="$COMPOSE_CMD -f docker-compose.cursor-agent.yaml"
+    fi
 }
 _refresh_compose_cmd
 
