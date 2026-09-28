@@ -17,6 +17,7 @@ from langgraph_sdk.errors import ConflictError
 from app.channels.commands import KNOWN_CHANNEL_COMMANDS
 from app.channels.memory_view import format_memory, render_memory
 from app.channels.message_bus import (
+    NOTIFICATION_METADATA_KEY,
     PENDING_CLARIFICATION_METADATA_KEY,
     InboundMessage,
     InboundMessageType,
@@ -45,6 +46,8 @@ DEFAULT_RUN_CONTEXT: dict[str, Any] = {
 }
 STREAM_UPDATE_MIN_INTERVAL_SECONDS = 0.35
 THREAD_BUSY_MESSAGE = "This conversation is already processing another request. Please wait for it to finish and try again."
+# 实时进度快照（self._live_runs）的保留上限：超过时淘汰最旧的已结束快照，避免长期运行累积
+_LIVE_RUNS_MAX = 200
 
 CHANNEL_CAPABILITIES = {
     "dingtalk": {"supports_streaming": False},
@@ -211,6 +214,18 @@ def _extract_response_text(result: dict | list) -> str:
     return ""
 
 
+def _extract_title(result: dict | list) -> str:
+    """从 graph 状态快照/结果中取出自动生成的会话标题（TitleMiddleware 写入 state.title）。
+
+    标题存在于 ThreadState.title 通道，会随 values 流事件与 runs.wait 结果一并返回。
+    """
+    if isinstance(result, dict):
+        title = result.get("title")
+        if isinstance(title, str) and title.strip():
+            return title.strip()
+    return ""
+
+
 def _messages_from_result(result: dict | list) -> list[Any]:
     if isinstance(result, list):
         return result
@@ -272,6 +287,29 @@ def _extract_todos(result: dict | list) -> list[dict[str, Any]] | None:
     return None
 
 
+# 子任务/todo 状态 -> 展示图标（渠道无关的纯文本渲染用，飞书卡片另有自己的一套）
+_TODO_STATUS_ICONS = {
+    "completed": "✅",
+    "in_progress": "🔄",
+    "running": "🔄",
+    "pending": "⬜",
+    "failed": "❌",
+    "cancelled": "🚫",
+}
+
+
+def _format_duration(seconds: float) -> str:
+    """把秒数格式化为“X小时Y分钟”/“X分钟Y秒”/“X秒”，用于进度展示。"""
+    total = int(max(0, seconds))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}小时{minutes}分钟"
+    if minutes:
+        return f"{minutes}分钟{secs}秒"
+    return f"{secs}秒"
+
+
 # task 工具发出的 custom 事件 type -> 展示用状态
 _CUSTOM_PROGRESS_STATUS = {
     "task_started": "running",
@@ -283,28 +321,48 @@ _CUSTOM_PROGRESS_STATUS = {
 }
 
 
-def _apply_custom_progress_event(running_steps: dict[str, dict[str, str]], data: Any) -> None:
-    """把 task 工具的 custom 流事件（task_started/running/completed...）折叠进子任务进度。"""
+def _apply_custom_progress_event(running_steps: dict[str, dict[str, str]], data: Any) -> dict[str, str] | None:
+    """把 task 工具的 custom 流事件（task_started/running/completed...）折叠进子任务进度。
+
+    额外：从 task_running 的 message 抽取“活动文本”，从 task_failed/timed_out 抽取错误文本。
+    当某子任务首次进入失败/超时态时，返回该步骤 dict 作为信号，供调用方推送通知（每个任务只返回一次）。
+    """
     if not isinstance(data, Mapping):
-        return
+        return None
     event_type = data.get("type")
     status = _CUSTOM_PROGRESS_STATUS.get(event_type) if isinstance(event_type, str) else None
     if status is None:
-        return
+        return None
     task_id = data.get("task_id")
     if not isinstance(task_id, str) or not task_id:
-        return
+        return None
     description = data.get("description")
     step = running_steps.get(task_id)
     if step is None:
-        running_steps[task_id] = {
+        step = {
             "description": description if isinstance(description, str) and description else "子任务",
             "status": status,
         }
+        running_steps[task_id] = step
     else:
         step["status"] = status
         if isinstance(description, str) and description and step.get("description") in (None, "", "子任务"):
             step["description"] = description
+
+    # task_running/task_started：记录子智能体最近一条消息文本，作为“正在做什么”的活动提示
+    activity = _extract_text_content(data.get("message"))
+    if activity:
+        step["activity"] = activity.strip()[:200]
+
+    # task_failed/task_timed_out：记录错误并作为信号返回（每个任务仅首次返回，避免重复推送）
+    if event_type in ("task_failed", "task_timed_out"):
+        error_text = data.get("error")
+        if isinstance(error_text, str) and error_text.strip():
+            step["error"] = error_text.strip()
+        if not step.get("_notified"):
+            step["_notified"] = "1"
+            return step
+    return None
 
 
 def _attach_progress_metadata(
@@ -316,7 +374,7 @@ def _attach_progress_metadata(
     if todos is not None:
         metadata["todos"] = todos
     if running_steps:
-        metadata["pipeline_steps"] = [{"description": s.get("description", ""), "status": s.get("status", "")} for s in running_steps.values()]
+        metadata["pipeline_steps"] = [{"description": s.get("description", ""), "status": s.get("status", ""), "activity": s.get("activity", "")} for s in running_steps.values()]
     return metadata
 
 
@@ -693,6 +751,8 @@ class ChannelManager:
         self._semaphore: asyncio.Semaphore | None = None
         self._running = False
         self._task: asyncio.Task | None = None
+        # 每线程实时进度快照（key = DeerFlow thread_id），供 /status 与忙时回复读取
+        self._live_runs: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def _channel_supports_streaming(channel_name: str) -> bool:
@@ -770,6 +830,161 @@ class ChannelManager:
             assistant_id = DEFAULT_ASSISTANT_ID
 
         return assistant_id, run_config, run_context
+
+    # -- live progress snapshot（实时进度，供 /status 与忙时回复读取）---------
+
+    def _start_live_progress(self, thread_id: str) -> None:
+        """一个 run 首次拥有快照时，重建为全新 running 状态。
+
+        必须在每轮 run 收到首个流事件时调用一次：否则同一会话的第二轮起会复用上一轮
+        已结束的快照，导致 started_at 陈旧（已运行时长偏大）、残留上一轮的 todos/子任务。
+        被拒（busy）的 run 收不到事件、不会调用此方法，因此不会覆盖正在运行的活动快照。
+        """
+        if not thread_id:
+            return
+        now = time.time()
+        self._live_runs[thread_id] = {
+            "status": "running",
+            "started_at": now,
+            "updated_at": now,
+            "todos": None,
+            "steps": {},
+            "latest_text": "",
+        }
+
+    def _update_live_progress(
+        self,
+        thread_id: str,
+        *,
+        todos: list[dict[str, Any]] | None,
+        steps: dict[str, dict[str, str]] | None,
+        latest_text: str,
+    ) -> None:
+        """逐流事件更新某线程的实时进度快照（不存在则创建为 running）。"""
+        if not thread_id:
+            return
+        now = time.time()
+        snapshot = self._live_runs.get(thread_id)
+        if snapshot is None:
+            snapshot = {"status": "running", "started_at": now, "todos": None, "steps": {}, "latest_text": ""}
+            self._live_runs[thread_id] = snapshot
+        snapshot["status"] = "running"
+        snapshot["updated_at"] = now
+        if todos is not None:
+            snapshot["todos"] = todos
+        if steps:
+            # 深拷贝一层，避免后续流循环里就地修改污染快照
+            snapshot["steps"] = {tid: dict(step) for tid, step in steps.items()}
+        if latest_text:
+            snapshot["latest_text"] = latest_text
+
+    def _finish_live_progress(self, thread_id: str) -> None:
+        """标记某线程的实时进度快照为已结束（保留内容供随后查询），并按上限清理。"""
+        snapshot = self._live_runs.get(thread_id) if thread_id else None
+        if snapshot is not None:
+            snapshot["status"] = "finished"
+            snapshot["updated_at"] = time.time()
+        self._prune_live_runs()
+
+    def _prune_live_runs(self) -> None:
+        """限制 _live_runs 规模：超过上限时淘汰最旧的已结束快照（运行中的一律保留）。"""
+        if len(self._live_runs) <= _LIVE_RUNS_MAX:
+            return
+        finished = [(tid, snap) for tid, snap in self._live_runs.items() if snap.get("status") != "running"]
+        finished.sort(key=lambda item: item[1].get("updated_at", 0.0))
+        excess = len(self._live_runs) - _LIVE_RUNS_MAX
+        for tid, _snap in finished[:excess]:
+            self._live_runs.pop(tid, None)
+
+    def _render_progress_snapshot(self, snapshot: dict[str, Any] | None) -> str:
+        """把实时进度快照渲染成 markdown 文本（无快照返回空串）。"""
+        if not snapshot:
+            return ""
+        now = time.time()
+        started = snapshot.get("started_at") or now
+        updated = snapshot.get("updated_at") or now
+        is_running = snapshot.get("status") == "running"
+        lines = ["**🟢 团队正在执行中**" if is_running else "**✅ 团队已完成本轮**"]
+        lines.append(f"已运行 {_format_duration(now - started)}，最近更新 {_format_duration(now - updated)}前")
+
+        todos = snapshot.get("todos")
+        if isinstance(todos, list) and todos:
+            lines.append("")
+            lines.append("**任务进度**")
+            for todo in todos:
+                if not isinstance(todo, dict):
+                    continue
+                content = str(todo.get("content", "")).strip()
+                if not content:
+                    continue
+                icon = _TODO_STATUS_ICONS.get(str(todo.get("status", "")), "▫️")
+                lines.append(f"{icon} {content}")
+
+        steps = snapshot.get("steps") or {}
+        running_steps = [s for s in steps.values() if isinstance(s, dict) and s.get("status") == "running"]
+        if running_steps:
+            lines.append("")
+            lines.append("**当前子任务**")
+            for step in running_steps:
+                desc = str(step.get("description", "")).strip() or "子任务"
+                line = f"🔧 {desc}"
+                activity = str(step.get("activity", "")).strip()
+                if activity:
+                    line += f"\n   ↳ {activity}"
+                lines.append(line)
+
+        return "\n".join(lines)
+
+    async def _fetch_run_status(self, thread_id: str) -> str:
+        """best-effort：从 Gateway 取该 thread 最新 run 的权威状态/累计 token（失败返回空串）。"""
+        if not thread_id:
+            return ""
+        try:
+            async with httpx.AsyncClient() as http:
+                resp = await http.get(
+                    f"{self._gateway_url}/api/threads/{thread_id}/runs",
+                    timeout=10,
+                    headers=create_internal_auth_headers(),
+                )
+                resp.raise_for_status()
+                runs = resp.json()
+        except Exception:
+            logger.debug("Failed to fetch run status for thread %s", thread_id, exc_info=True)
+            return ""
+        if not isinstance(runs, list) or not runs:
+            return ""
+        run = runs[0]  # list_by_thread 已按 created_at 倒序，[0] 为最新
+        status = str(run.get("status", "")) or "unknown"
+        total_tokens = run.get("total_tokens", 0) or 0
+        message_count = run.get("message_count", 0) or 0
+        lines = [f"运行状态：{status}"]
+        if total_tokens or message_count:
+            lines.append(f"累计 token：{total_tokens}（消息 {message_count}）")
+        return "\n".join(lines)
+
+    async def _publish_failure_notification(self, msg: InboundMessage, thread_id: str, step: dict[str, str]) -> None:
+        """子任务失败/超时时，推送一条独立通知 outbound（渠道据 NOTIFICATION_METADATA_KEY 另发新消息）。"""
+        desc = str(step.get("description", "")).strip() or "子任务"
+        error_text = str(step.get("error", "")).strip()
+        workdir = self.store.get_workdir(msg.channel_name, msg.chat_id)
+        lines = [f"子任务执行失败：{desc}"]
+        if workdir:
+            lines.append(f"工作目录：{workdir}")
+        if error_text:
+            lines.append(f"错误：{error_text[:500]}")
+        metadata = _slim_metadata(msg.metadata)
+        metadata[NOTIFICATION_METADATA_KEY] = True
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel_name=msg.channel_name,
+                chat_id=msg.chat_id,
+                thread_id=thread_id,
+                text="\n".join(lines),
+                is_final=False,
+                thread_ts=msg.thread_ts,
+                metadata=metadata,
+            )
+        )
 
     # -- LangGraph SDK client (lazy) ----------------------------------------
 
@@ -878,8 +1093,38 @@ class ChannelManager:
             topic_id=msg.topic_id,
             user_id=msg.user_id,
         )
+        # 把新线程登记进会话注册表，并快照当前 人设/模型/工作目录（供 /sessions 切换时恢复）
+        self.store.add_session(msg.channel_name, msg.chat_id, thread_id)
         logger.info("[Manager] new thread created through Gateway: thread_id=%s for chat_id=%s topic_id=%s", thread_id, msg.chat_id, msg.topic_id)
         return thread_id
+
+    async def _start_new_thread(self, msg: InboundMessage) -> str:
+        """显式开启一个新会话（/new、/sessions new、飞书「新会话」按钮共用）。"""
+        client = self._get_client()
+        thread = await client.threads.create()
+        new_thread_id = thread["thread_id"]
+        self.store.set_thread_id(
+            msg.channel_name,
+            msg.chat_id,
+            new_thread_id,
+            topic_id=msg.topic_id,
+            user_id=msg.user_id,
+        )
+        self.store.add_session(msg.channel_name, msg.chat_id, new_thread_id)
+        return new_thread_id
+
+    def _record_session_activity(self, msg: InboundMessage, thread_id: str, result: dict | list) -> None:
+        """每轮 run 结束：缓存自动生成的标题 + 刷新会话活跃时间（注册表用于 /sessions）。"""
+        if not thread_id:
+            return
+        try:
+            title = _extract_title(result)
+            if title:
+                self.store.set_session_title(msg.channel_name, msg.chat_id, thread_id, title)
+            else:
+                self.store.touch_session(msg.channel_name, msg.chat_id, thread_id)
+        except Exception:
+            logger.debug("[Manager] failed to record session activity for thread %s", thread_id, exc_info=True)
 
     async def _handle_chat(self, msg: InboundMessage, extra_context: dict[str, Any] | None = None) -> None:
         client = self._get_client()
@@ -945,7 +1190,10 @@ class ChannelManager:
         except Exception as exc:
             if _is_thread_busy_error(exc):
                 logger.warning("[Manager] thread busy (concurrent run rejected): thread_id=%s", thread_id)
-                await self._send_error(msg, THREAD_BUSY_MESSAGE)
+                # 撞上运行中：优先回显实时进度快照（仅当同线程有流式 run 在跑时才有内容），否则回退通用文案
+                snapshot = self._live_runs.get(thread_id)
+                rendered = self._render_progress_snapshot(snapshot) if snapshot else ""
+                await self._send_error(msg, rendered or THREAD_BUSY_MESSAGE)
                 return
             else:
                 raise
@@ -953,6 +1201,7 @@ class ChannelManager:
         response_text = _extract_response_text(result)
         pending_clarification = _has_current_turn_clarification(result)
         artifacts = _extract_artifacts(result)
+        self._record_session_activity(msg, thread_id, result)
 
         logger.info(
             "[Manager] agent response received: thread_id=%s, response_len=%d, artifacts=%d",
@@ -1004,6 +1253,9 @@ class ChannelManager:
         latest_todos: list[dict[str, Any]] | None = None
         running_steps: dict[str, dict[str, str]] = {}
         last_published_progress = ""
+        # 仅在真正收到首个流事件时才“拥有”该线程的实时快照：撞忙被拒的 run 在发事件前就报错，
+        # 不会置位，从而不会覆盖/收尾正在运行的那条活动快照。
+        owns_snapshot = False
 
         try:
             async for chunk in client.runs.stream(
@@ -1015,6 +1267,10 @@ class ChannelManager:
                 stream_mode=["messages-tuple", "values", "custom"],
                 multitask_strategy="reject",
             ):
+                if not owns_snapshot:
+                    # 首个流事件：本轮 run 取得快照所有权，重建为全新状态（避免复用上一轮的陈旧快照）
+                    owns_snapshot = True
+                    self._start_live_progress(thread_id)
                 event = getattr(chunk, "event", "")
                 data = getattr(chunk, "data", None)
 
@@ -1031,10 +1287,15 @@ class ChannelManager:
                     if snapshot_text:
                         latest_text = snapshot_text
                 elif event == "custom":
-                    _apply_custom_progress_event(running_steps, data)
+                    failed_step = _apply_custom_progress_event(running_steps, data)
+                    if failed_step is not None:
+                        await self._publish_failure_notification(msg, thread_id, failed_step)
+
+                # 每个流事件都刷新该线程的实时进度快照（供 /status 与忙时回复读取）
+                self._update_live_progress(thread_id, todos=latest_todos, steps=running_steps, latest_text=latest_text)
 
                 # 文本或进度任一变化即推送（进度可在尚无文本时先行展示）
-                progress_signature = repr((latest_todos, [(tid, s.get("status")) for tid, s in running_steps.items()]))
+                progress_signature = repr((latest_todos, [(tid, s.get("status"), s.get("activity")) for tid, s in running_steps.items()]))
                 text_changed = bool(latest_text) and latest_text != last_published_text
                 progress_changed = progress_signature != last_published_progress
                 if not (text_changed or progress_changed):
@@ -1071,6 +1332,7 @@ class ChannelManager:
             response_text = _extract_response_text(result)
             pending_clarification = _has_current_turn_clarification(result)
             artifacts = _extract_artifacts(result)
+            self._record_session_activity(msg, thread_id, result)
             final_todos = _extract_todos(result)
             if final_todos is not None:
                 latest_todos = final_todos
@@ -1081,7 +1343,10 @@ class ChannelManager:
                     response_text = _format_artifact_text([attachment.virtual_path for attachment in attachments])
                 elif stream_error:
                     if _is_thread_busy_error(stream_error):
-                        response_text = THREAD_BUSY_MESSAGE
+                        # 撞上运行中：回显当前运行的实时进度快照，而非通用忙碌文案
+                        snapshot = self._live_runs.get(thread_id)
+                        rendered = self._render_progress_snapshot(snapshot) if snapshot else ""
+                        response_text = rendered or THREAD_BUSY_MESSAGE
                     else:
                         response_text = "An error occurred while processing your request. Please try again."
                 else:
@@ -1112,6 +1377,10 @@ class ChannelManager:
                 )
             )
 
+            # 仅由真正拥有快照的 run（本轮活动 run）负责收尾，避免撞忙被拒的 run 误标结束
+            if owns_snapshot:
+                self._finish_live_progress(thread_id)
+
     # -- command handling --------------------------------------------------
 
     async def _handle_command(self, msg: InboundMessage) -> None:
@@ -1129,27 +1398,39 @@ class ChannelManager:
 
         if command == "new":
             # Create a new thread through Gateway
-            client = self._get_client()
-            thread = await client.threads.create()
-            new_thread_id = thread["thread_id"]
-            self.store.set_thread_id(
-                msg.channel_name,
-                msg.chat_id,
-                new_thread_id,
-                topic_id=msg.topic_id,
-                user_id=msg.user_id,
-            )
+            await self._start_new_thread(msg)
             reply = "New conversation started."
         elif command == "repo":
             reply = self._handle_repo_command(msg, parts[1].strip() if len(parts) > 1 else "")
         elif command == "agent":
             reply = self._handle_agent_command(msg, parts[1].strip() if len(parts) > 1 else "")
+        elif command == "sessions":
+            reply = await self._handle_sessions_command(msg, parts[1].strip() if len(parts) > 1 else "")
         elif command == "status":
             thread_id = self.store.get_thread_id(msg.channel_name, msg.chat_id, topic_id=msg.topic_id)
-            reply = f"Active thread: {thread_id}" if thread_id else "No active conversation."
+            sections: list[str] = []
+
+            # 1) 运行中：前置实时进度快照（当前步骤/子任务/已运行时长）
+            snapshot = self._live_runs.get(thread_id) if thread_id else None
+            if snapshot and snapshot.get("status") == "running":
+                rendered = self._render_progress_snapshot(snapshot)
+                if rendered:
+                    sections.append(rendered)
+
+            # 2) 权威状态（best-effort 查 Gateway 最新 run 的 status / 累计 token）
+            if thread_id:
+                gateway_status = await self._fetch_run_status(thread_id)
+                if gateway_status:
+                    sections.append(gateway_status)
+
+            # 3) 原有基础信息
+            base = f"Active thread: {thread_id}" if thread_id else "No active conversation."
             workdir = self.store.get_workdir(msg.channel_name, msg.chat_id)
-            reply += f"\n当前工作目录：{workdir}" if workdir else "\n当前工作目录：未设置（用 /repo 选择）"
-            reply += f"\n当前人设：{self._current_persona_label(msg)}"
+            base += f"\n当前工作目录：{workdir}" if workdir else "\n当前工作目录：未设置（用 /repo 选择）"
+            base += f"\n当前人设：{self._current_persona_label(msg)}"
+            sections.append(base)
+
+            reply = "\n\n".join(sections)
         elif command == "models":
             reply = await self._fetch_gateway("/api/models", "models")
         elif command == "model":
@@ -1163,6 +1444,7 @@ class ChannelManager:
                 "Available commands:\n"
                 "/bootstrap — Start a bootstrap session (enables agent setup)\n"
                 "/new — Start a new conversation\n"
+                "/sessions — 列出/切换/删除/查看历史会话（/sessions switch|delete|view|rename <序号>）\n"
                 "/repo — 选择/查看当前工作目录（/repo <名称> 直接设置，/repo clear 清除）\n"
                 "/agent — 选择/查看当前人设（/agent <名称> 直接切换，/agent default 恢复通用助手）\n"
                 "/status — Show current thread info\n"
@@ -1175,6 +1457,10 @@ class ChannelManager:
         else:
             available = " | ".join(sorted(KNOWN_CHANNEL_COMMANDS))
             reply = f"Unknown command: /{command}. Available commands: {available}"
+
+        # reply 为 None 表示静默命令（如 /sessions _gcdelete）：不产生任何 outbound。
+        if reply is None:
+            return
 
         outbound = OutboundMessage(
             channel_name=msg.channel_name,
@@ -1280,6 +1566,204 @@ class ChannelManager:
             lines.append(f"• {label}（{name}）{mark}{suffix}")
         lines.append("\n用 /agent <名称> 切换，/agent default 恢复通用助手。")
         return "\n".join(lines)
+
+    # -- /sessions 多会话管理（列表 / 切换 / 删除 / 查看 / 重命名）----------------
+
+    _SESSIONS_LIST_HINT = "用 /sessions switch <序号> 切换，/sessions view <序号> 查看，/sessions delete <序号> 删除。"
+
+    async def _handle_sessions_command(self, msg: InboundMessage, arg: str) -> str | None:
+        """处理 /sessions 命令：无参列表；子命令 switch/delete/view/rename/new。
+
+        返回回复文本；返回 None 表示静默（不回消息，用于卡片侧已处理的内部清理命令）。
+        """
+        parts = arg.split(maxsplit=1)
+        sub = parts[0].lower() if parts else ""
+        rest = parts[1].strip() if len(parts) > 1 else ""
+
+        if not sub or sub in ("list", "ls"):
+            return self._render_sessions_list(msg)
+        if sub in ("switch", "use", "resume", "go", "open"):
+            return self._handle_session_switch(msg, rest)
+        if sub in ("delete", "del", "rm", "remove"):
+            return await self._handle_session_delete(msg, rest)
+        if sub in ("view", "show", "info"):
+            return await self._handle_session_view(msg, rest)
+        if sub in ("rename", "name"):
+            return await self._handle_session_rename(msg, rest)
+        if sub == "new":
+            await self._start_new_thread(msg)
+            return "已开启新会话。直接发消息即可开始。"
+        if sub == "_gcdelete":
+            # 内部命令：飞书卡片删除已在本地移除并刷新卡片，这里只做 Gateway 线程清理，不回消息
+            if rest:
+                await self._delete_gateway_thread(rest)
+            return None
+        return f"未知子命令：{sub}\n{self._SESSIONS_LIST_HINT}"
+
+    # -- session 展示与解析助手 --------------------------------------------
+
+    @staticmethod
+    def _session_display_title(session: Mapping[str, Any]) -> str:
+        title = session.get("title")
+        if isinstance(title, str) and title.strip():
+            return title.strip()
+        return "未命名会话"
+
+    def _session_persona_label(self, agent: Any) -> str:
+        return self._persona_label(agent) if isinstance(agent, str) and agent.strip() else "通用助手"
+
+    @staticmethod
+    def _relative_time(ts: Any) -> str:
+        try:
+            delta = max(0.0, time.time() - float(ts))
+        except (TypeError, ValueError):
+            return ""
+        if delta < 60:
+            return "刚刚"
+        if delta < 3600:
+            return f"{int(delta // 60)}分钟前"
+        if delta < 86400:
+            return f"{int(delta // 3600)}小时前"
+        return f"{int(delta // 86400)}天前"
+
+    @staticmethod
+    def _resolve_session_ref(sessions: list[dict[str, Any]], token: str) -> dict[str, Any] | None:
+        """把用户输入（1 起的序号，或 thread_id / 其前缀）解析为某个会话快照。"""
+        token = (token or "").strip()
+        if not token:
+            return None
+        if token.isdigit():
+            idx = int(token)
+            return sessions[idx - 1] if 1 <= idx <= len(sessions) else None
+        for s in sessions:
+            if s.get("thread_id") == token:
+                return s
+        matches = [s for s in sessions if str(s.get("thread_id", "")).startswith(token)]
+        return matches[0] if len(matches) == 1 else None
+
+    def _render_sessions_list(self, msg: InboundMessage) -> str:
+        sessions = self.store.list_sessions(msg.channel_name, msg.chat_id)
+        if not sessions:
+            return "当前没有会话记录。直接发消息即可开始第一个会话。"
+        current = self.store.get_thread_id(msg.channel_name, msg.chat_id, topic_id=msg.topic_id)
+        lines = [f"会话列表（共 {len(sessions)} 个）："]
+        for idx, s in enumerate(sessions, 1):
+            mark = "✓ " if s.get("thread_id") == current else ""
+            meta_bits = [self._session_persona_label(s.get("agent"))]
+            rel = self._relative_time(s.get("updated_at"))
+            if rel:
+                meta_bits.append(rel)
+            lines.append(f"{idx}. {mark}{self._session_display_title(s)}（{' · '.join(meta_bits)}）")
+        lines.append("")
+        lines.append(self._SESSIONS_LIST_HINT)
+        return "\n".join(lines)
+
+    def _handle_session_switch(self, msg: InboundMessage, rest: str) -> str:
+        sessions = self.store.list_sessions(msg.channel_name, msg.chat_id)
+        target = self._resolve_session_ref(sessions, rest)
+        if target is None:
+            return "找不到该会话。用 /sessions 查看列表。"
+        snapshot = self.store.switch_session(msg.channel_name, msg.chat_id, target["thread_id"])
+        if snapshot is None:
+            return "切换失败：会话不存在。"
+        settings = [f"人设：{self._session_persona_label(snapshot.get('agent'))}"]
+        if snapshot.get("model"):
+            settings.append(f"模型：{snapshot['model']}")
+        if snapshot.get("workdir"):
+            settings.append(f"工作目录：{snapshot['workdir']}")
+        return f"已切换到会话：{self._session_display_title(snapshot)}\n已恢复 {'，'.join(settings)}。\n继续发消息即可在该会话上下文中对话。"
+
+    async def _handle_session_delete(self, msg: InboundMessage, rest: str) -> str:
+        sessions = self.store.list_sessions(msg.channel_name, msg.chat_id)
+        target = self._resolve_session_ref(sessions, rest)
+        if target is None:
+            return "找不到该会话。用 /sessions 查看列表。"
+        thread_id = target["thread_id"]
+        title = self._session_display_title(target)
+        await self._delete_gateway_thread(thread_id)
+        result = self.store.remove_session(msg.channel_name, msg.chat_id, thread_id)
+        if not result.get("removed"):
+            return "删除失败：会话不存在。"
+        lines = [f"已删除会话：{title}"]
+        if result.get("was_current"):
+            new_current = result.get("new_current")
+            if new_current:
+                snap = self.store.get_session(msg.channel_name, msg.chat_id, new_current)
+                lines.append(f"已自动切换到最近会话：{self._session_display_title(snap or {})}")
+            else:
+                lines.append("这是当前会话，已清空；下条消息将开启新会话。")
+        return "\n".join(lines)
+
+    async def _handle_session_view(self, msg: InboundMessage, rest: str) -> str:
+        sessions = self.store.list_sessions(msg.channel_name, msg.chat_id)
+        target = self._resolve_session_ref(sessions, rest)
+        if target is None:
+            return "找不到该会话。用 /sessions 查看列表。"
+        thread_id = target["thread_id"]
+        current = self.store.get_thread_id(msg.channel_name, msg.chat_id, topic_id=msg.topic_id)
+        idx = next((i for i, s in enumerate(sessions, 1) if s.get("thread_id") == thread_id), None)
+        lines = [f"会话：{self._session_display_title(target)}" + ("（当前）" if thread_id == current else "")]
+        lines.append(f"人设：{self._session_persona_label(target.get('agent'))}")
+        if target.get("model"):
+            lines.append(f"模型：{target['model']}")
+        if target.get("workdir"):
+            lines.append(f"工作目录：{target['workdir']}")
+        created = self._relative_time(target.get("created_at"))
+        if created:
+            lines.append(f"创建于：{created}")
+        snippet = await self._fetch_thread_last_reply(thread_id)
+        if snippet:
+            lines.append("")
+            lines.append(f"最近回复：{snippet}")
+        if idx is not None and thread_id != current:
+            lines.append("")
+            lines.append(f"用 /sessions switch {idx} 切换到该会话。")
+        return "\n".join(lines)
+
+    async def _handle_session_rename(self, msg: InboundMessage, rest: str) -> str:
+        parts = rest.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            return "用法：/sessions rename <序号> <新名称>"
+        ref, new_name = parts[0], parts[1].strip()
+        sessions = self.store.list_sessions(msg.channel_name, msg.chat_id)
+        target = self._resolve_session_ref(sessions, ref)
+        if target is None:
+            return "找不到该会话。用 /sessions 查看列表。"
+        thread_id = target["thread_id"]
+        await self._rename_gateway_thread(thread_id, new_name)
+        self.store.set_session_title(msg.channel_name, msg.chat_id, thread_id, new_name)
+        return f"已重命名为：{new_name}"
+
+    # -- Gateway 线程操作（删除 / 重命名 / 取最近回复，供 /sessions 使用）---------
+
+    async def _delete_gateway_thread(self, thread_id: str) -> None:
+        """通过 Gateway 彻底删除线程（文件/检查点/元数据）。失败仅告警，不阻断本地清理。"""
+        try:
+            await self._get_client().threads.delete(thread_id)
+        except Exception:
+            logger.warning("[Manager] failed to delete gateway thread %s", thread_id, exc_info=True)
+
+    async def _rename_gateway_thread(self, thread_id: str, title: str) -> None:
+        """通过 Gateway 更新线程标题（写 state.title → 同步 threads_meta.display_name）。"""
+        try:
+            await self._get_client().threads.update_state(thread_id, {"title": title})
+        except Exception:
+            logger.debug("[Manager] failed to rename gateway thread %s (non-fatal)", thread_id, exc_info=True)
+
+    async def _fetch_thread_last_reply(self, thread_id: str) -> str:
+        """best-effort：取某线程最近一条助手回复片段（用于 /sessions view）。"""
+        try:
+            state = await self._get_client().threads.get_state(thread_id)
+        except Exception:
+            logger.debug("[Manager] failed to fetch state for thread %s", thread_id, exc_info=True)
+            return ""
+        values = state.get("values") if isinstance(state, Mapping) else None
+        if not isinstance(values, Mapping):
+            return ""
+        text = _extract_response_text(dict(values)).strip().replace("\n", " ")
+        if not text:
+            return ""
+        return text[:200] + ("…" if len(text) > 200 else "")
 
     @staticmethod
     def _available_models() -> list[tuple[str, str | None]]:

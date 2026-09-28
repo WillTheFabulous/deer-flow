@@ -163,6 +163,28 @@ def _report_subagent_usage(runtime: Any, result: Any) -> None:
         logger.warning("Failed to report subagent token usage", exc_info=True)
 
 
+def _report_subagent_usage_incremental(runtime: Any, result: Any) -> None:
+    """运行中把子智能体已累计的 token 快照增量上报父 RunJournal，驱动父 runs 行实时刷新。
+
+    与终态的 ``_report_subagent_usage`` 区别：
+    - 不设置 ``usage_reported`` 标志（终态那次仍会照常补报，幂等无副作用）。
+    - 每轮轮询推送完整 ``token_usage_records`` 快照；``record_external_llm_usage_records``
+      内部按 ``source_run_id`` 去重，已计入的会被跳过、新增的累加，因此重复上报安全。
+    上报会触发 journal 的节流进度刷新（update_run_progress），让 ``runs`` 行的
+    token/updated_at 在长子任务运行期间持续推进，而非冻结到子任务结束。
+    """
+    records = getattr(result, "token_usage_records", None) or []
+    if not records:
+        return
+    journal = _find_usage_recorder(runtime)
+    if journal is None:
+        return
+    try:
+        journal.record_external_llm_usage_records(records)
+    except Exception:
+        logger.debug("Incremental subagent usage report failed", exc_info=True)
+
+
 def _get_runtime_app_config(runtime: Any) -> "AppConfig | None":
     context = getattr(runtime, "context", None)
     if isinstance(context, dict):
@@ -392,6 +414,10 @@ async def task_tool(
                 logger.warning(f"[trace={trace_id}] Task {task_id} timed out: {result.error}")
                 cleanup_background_task(task_id)
                 return f"Task timed out. Error: {result.error}"
+
+            # 仍在运行：把子智能体已累计的 token 快照增量回写父 run（按 source 去重，幂等），
+            # 使父 runs 行在长子任务期间持续刷新，而非冻结到子任务结束。
+            _report_subagent_usage_incremental(runtime, result)
 
             # Still running, wait before next poll
             await asyncio.sleep(5)

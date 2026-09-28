@@ -12,6 +12,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# upsert 会话时区分“未传入 title”与“传入空 title”的哨兵
+_UNSET: Any = object()
+
 
 class ChannelStore:
     """JSON-file-backed store that maps IM conversations to DeerFlow threads.
@@ -171,6 +174,7 @@ class ChannelStore:
                     "updated_at": now,
                 }
             )
+            self._sync_session_setting_locked(entry, "workdir", workdir)
             self._data[key] = entry
             self._save()
 
@@ -183,6 +187,7 @@ class ChannelStore:
                 return False
             del entry["workdir"]
             entry["updated_at"] = time.time()
+            self._sync_session_setting_locked(entry, "workdir", None)
             self._save()
             return True
 
@@ -221,6 +226,7 @@ class ChannelStore:
                     "updated_at": now,
                 }
             )
+            self._sync_session_setting_locked(entry, "agent", agent)
             self._data[key] = entry
             self._save()
 
@@ -233,6 +239,7 @@ class ChannelStore:
                 return False
             del entry["agent"]
             entry["updated_at"] = time.time()
+            self._sync_session_setting_locked(entry, "agent", None)
             self._save()
             return True
 
@@ -261,6 +268,7 @@ class ChannelStore:
                     "updated_at": now,
                 }
             )
+            self._sync_session_setting_locked(entry, "model", model)
             self._data[key] = entry
             self._save()
 
@@ -273,8 +281,214 @@ class ChannelStore:
                 return False
             del entry["model"]
             entry["updated_at"] = time.time()
+            self._sync_session_setting_locked(entry, "model", None)
             self._save()
             return True
+
+    # -- 会话注册表（多会话：记录 / 命名 / 切换 / 删除 / 查看）-------------------
+    # 每个「channel:chat_id」维护一组会话快照，key = DeerFlow thread_id：
+    #   sessions[thread_id] = {title, agent, model, workdir, created_at, updated_at}
+    # 现有 thread_id 字段仍为「当前会话」指针；agent/model/workdir 为「当前生效设置」。
+    # 注册表按 chat 级（不区分 topic）维护，与 agent/model/workdir 作用域一致；
+    # p2p 扁平化（topic_id=None）下即单条连续线程，正是主用例。
+
+    SESSION_FIELDS = ("agent", "model", "workdir")
+    # 每个 chat 的会话注册表上限：超过时裁剪最旧的、且非当前的会话（仅清本地注册项，不删 Gateway 线程）
+    SESSION_LIMIT = 50
+
+    @staticmethod
+    def _session_snapshot_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
+        """从 chat 级条目抽取当前 人设/模型/工作目录 作为会话快照。"""
+        return {field: entry.get(field) for field in ChannelStore.SESSION_FIELDS}
+
+    def _upsert_session_locked(self, entry: dict[str, Any], thread_id: str, now: float, *, title: Any = _UNSET) -> dict[str, Any]:
+        """在已持锁前提下，确保 entry.sessions 内存在 thread_id 的会话（缺失则按当前设置补建）。
+
+        返回写入后的会话快照（已挂回 entry["sessions"]）。
+        """
+        sessions = dict(entry.get("sessions") or {})
+        existing = sessions.get(thread_id)
+        if isinstance(existing, dict):
+            session = dict(existing)
+        else:
+            session = {"title": None, "created_at": now, **self._session_snapshot_from_entry(entry)}
+        if title is not _UNSET and title:
+            session["title"] = title
+        session["updated_at"] = now
+        sessions[thread_id] = session
+        entry["sessions"] = sessions
+        return session
+
+    def _sync_session_setting_locked(self, entry: dict[str, Any], field: str, value: str | None) -> None:
+        """把 chat 级设置变更同步到「当前会话」的快照（当前会话存在时；不补建）。"""
+        thread_id = entry.get("thread_id")
+        src = entry.get("sessions")
+        if not thread_id or not isinstance(src, dict) or thread_id not in src or not isinstance(src[thread_id], dict):
+            return
+        sessions = dict(src)
+        session = dict(sessions[thread_id])
+        if value:
+            session[field] = value
+        else:
+            session.pop(field, None)
+        session["updated_at"] = time.time()
+        sessions[thread_id] = session
+        entry["sessions"] = sessions
+
+    def _prune_sessions_locked(self, entry: dict[str, Any]) -> None:
+        """裁剪会话注册表：超过 SESSION_LIMIT 时丢弃最旧的、且非当前会话的注册项。
+
+        仅清理本地注册项（不删 Gateway 线程）；当前会话（entry["thread_id"]）永不裁剪。
+        """
+        sessions = entry.get("sessions")
+        if not isinstance(sessions, dict) or len(sessions) <= self.SESSION_LIMIT:
+            return
+        current = entry.get("thread_id")
+        prunable = sorted(
+            ((tid, snap) for tid, snap in sessions.items() if tid != current and isinstance(snap, dict)),
+            key=lambda kv: kv[1].get("updated_at", 0.0),
+        )
+        excess = len(sessions) - self.SESSION_LIMIT
+        for tid, _snap in prunable[:excess]:
+            sessions.pop(tid, None)
+
+    def add_session(self, channel_name: str, chat_id: str, thread_id: str) -> None:
+        """注册一个会话，快照当前 chat 级 人设/模型/工作目录；已存在则仅刷新时间。"""
+        if not thread_id:
+            return
+        with self._lock:
+            key = self._key(channel_name, chat_id)
+            now = time.time()
+            entry = dict(self._data.get(key) or {})
+            entry.setdefault("created_at", now)
+            entry["updated_at"] = now
+            self._upsert_session_locked(entry, thread_id, now)
+            self._prune_sessions_locked(entry)
+            self._data[key] = entry
+            self._save()
+
+    def touch_session(self, channel_name: str, chat_id: str, thread_id: str) -> None:
+        """刷新会话的 updated_at（缺失则按当前设置补建，兼容旧线程）。"""
+        if not thread_id:
+            return
+        with self._lock:
+            key = self._key(channel_name, chat_id)
+            now = time.time()
+            entry = dict(self._data.get(key) or {})
+            entry.setdefault("created_at", now)
+            entry["updated_at"] = now
+            self._upsert_session_locked(entry, thread_id, now)
+            self._data[key] = entry
+            self._save()
+
+    def set_session_title(self, channel_name: str, chat_id: str, thread_id: str, title: str) -> None:
+        """缓存会话标题（首轮对话后由总结模型生成；缺失则补建）。空标题忽略。"""
+        if not thread_id or not title or not title.strip():
+            return
+        with self._lock:
+            key = self._key(channel_name, chat_id)
+            now = time.time()
+            entry = dict(self._data.get(key) or {})
+            entry.setdefault("created_at", now)
+            entry["updated_at"] = now
+            self._upsert_session_locked(entry, thread_id, now, title=title.strip())
+            self._data[key] = entry
+            self._save()
+
+    def get_session(self, channel_name: str, chat_id: str, thread_id: str) -> dict[str, Any] | None:
+        """返回某会话的快照（含 thread_id）；不存在返回 None。"""
+        # 持锁读：飞书回调线程与 manager 的 asyncio 线程共用本 store，避免与并发改动竞争。
+        with self._lock:
+            entry = self._data.get(self._key(channel_name, chat_id))
+            if not entry:
+                return None
+            sessions = entry.get("sessions")
+            if isinstance(sessions, dict) and isinstance(sessions.get(thread_id), dict):
+                return {"thread_id": thread_id, **sessions[thread_id]}
+            return None
+
+    def list_sessions(self, channel_name: str, chat_id: str) -> list[dict[str, Any]]:
+        """列出该会话下全部会话快照（含 thread_id），按 updated_at 倒序。"""
+        # 持锁读 + 迭代：否则并发 remove_session 的 del 会触发 "dictionary changed size during iteration"。
+        with self._lock:
+            entry = self._data.get(self._key(channel_name, chat_id))
+            if not entry:
+                return []
+            sessions = entry.get("sessions")
+            if not isinstance(sessions, dict):
+                return []
+            items = [{"thread_id": tid, **snap} for tid, snap in sessions.items() if isinstance(snap, dict)]
+        items.sort(key=lambda s: s.get("updated_at", 0.0), reverse=True)
+        return items
+
+    def switch_session(self, channel_name: str, chat_id: str, thread_id: str) -> dict[str, Any] | None:
+        """切换当前会话：设当前 thread_id 指针 + 从快照恢复 人设/模型/工作目录。
+
+        返回恢复后的会话快照（含 thread_id）；目标会话不存在返回 None。
+        """
+        with self._lock:
+            key = self._key(channel_name, chat_id)
+            entry = self._data.get(key)
+            if not entry:
+                return None
+            sessions = entry.get("sessions")
+            if not isinstance(sessions, dict) or not isinstance(sessions.get(thread_id), dict):
+                return None
+            now = time.time()
+            entry["thread_id"] = thread_id
+            snapshot = dict(sessions[thread_id])
+            # 恢复该会话的 人设/模型/工作目录（None/空 表示回落默认 → 删除覆盖）
+            for field in self.SESSION_FIELDS:
+                value = snapshot.get(field)
+                if value:
+                    entry[field] = value
+                else:
+                    entry.pop(field, None)
+            snapshot["updated_at"] = now
+            sessions[thread_id] = snapshot
+            entry["updated_at"] = now
+            self._save()
+            return {"thread_id": thread_id, **snapshot}
+
+    def remove_session(self, channel_name: str, chat_id: str, thread_id: str) -> dict[str, Any]:
+        """从注册表移除某会话。
+
+        若删除的是当前会话：切到剩余里最近使用的一个（并恢复其设置），
+        没有则清空当前指针（下条消息会自动新建线程）。
+        返回 {removed, was_current, new_current}。
+        """
+        with self._lock:
+            key = self._key(channel_name, chat_id)
+            entry = self._data.get(key)
+            if not entry:
+                return {"removed": False, "was_current": False, "new_current": None}
+            sessions = entry.get("sessions")
+            if not isinstance(sessions, dict) or thread_id not in sessions:
+                return {"removed": False, "was_current": False, "new_current": None}
+
+            del sessions[thread_id]
+            was_current = entry.get("thread_id") == thread_id
+            new_current: str | None = None
+            if was_current:
+                remaining = sorted(
+                    ((tid, snap) for tid, snap in sessions.items() if isinstance(snap, dict)),
+                    key=lambda kv: kv[1].get("updated_at", 0.0),
+                    reverse=True,
+                )
+                if remaining:
+                    new_current, snap = remaining[0]
+                    entry["thread_id"] = new_current
+                    for field in self.SESSION_FIELDS:
+                        value = snap.get(field)
+                        if value:
+                            entry[field] = value
+                        else:
+                            entry.pop(field, None)
+                else:
+                    entry.pop("thread_id", None)
+            entry["updated_at"] = time.time()
+            self._save()
+            return {"removed": True, "was_current": was_current, "new_current": new_current}
 
     # -- 用户与会话映射（机器人菜单事件只带 open_id，需要据此找回会话）-------
 

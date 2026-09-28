@@ -213,6 +213,180 @@ class TestChannelStore:
 
 
 # ---------------------------------------------------------------------------
+# ChannelStore — 多会话注册表（记录 / 命名 / 切换 / 删除）
+# ---------------------------------------------------------------------------
+
+
+class TestChannelStoreSessions:
+    @pytest.fixture
+    def store(self, tmp_path):
+        return ChannelStore(path=tmp_path / "store.json")
+
+    def test_add_and_list_sessions(self, store):
+        store.set_thread_id("feishu", "c1", "t1")
+        store.add_session("feishu", "c1", "t1")
+        store.set_thread_id("feishu", "c1", "t2")
+        store.add_session("feishu", "c1", "t2")
+        assert {s["thread_id"] for s in store.list_sessions("feishu", "c1")} == {"t1", "t2"}
+
+    def test_new_thread_does_not_drop_old_session(self, store):
+        # 模拟 /new：覆盖当前 thread_id，但旧会话仍保留在注册表（不再被遗弃）
+        store.set_thread_id("feishu", "c1", "t1")
+        store.add_session("feishu", "c1", "t1")
+        store.set_thread_id("feishu", "c1", "t2")
+        store.add_session("feishu", "c1", "t2")
+        assert store.get_thread_id("feishu", "c1") == "t2"
+        assert {s["thread_id"] for s in store.list_sessions("feishu", "c1")} == {"t1", "t2"}
+
+    def test_add_session_snapshots_current_settings(self, store):
+        store.set_agent("feishu", "c1", "software-team")
+        store.set_model("feishu", "c1", "gpt-x")
+        store.set_workdir("feishu", "c1", "/mnt/projects/a")
+        store.set_thread_id("feishu", "c1", "t1")
+        store.add_session("feishu", "c1", "t1")
+        snap = store.get_session("feishu", "c1", "t1")
+        assert snap["agent"] == "software-team"
+        assert snap["model"] == "gpt-x"
+        assert snap["workdir"] == "/mnt/projects/a"
+
+    def test_set_session_title(self, store):
+        store.add_session("feishu", "c1", "t1")
+        store.set_session_title("feishu", "c1", "t1", "我的第一个会话")
+        assert store.get_session("feishu", "c1", "t1")["title"] == "我的第一个会话"
+
+    def test_empty_title_is_ignored(self, store):
+        store.add_session("feishu", "c1", "t1")
+        store.set_session_title("feishu", "c1", "t1", "   ")
+        assert store.get_session("feishu", "c1", "t1")["title"] is None
+
+    def test_setting_change_syncs_current_session_snapshot(self, store):
+        store.set_thread_id("feishu", "c1", "t1")
+        store.add_session("feishu", "c1", "t1")
+        store.set_agent("feishu", "c1", "software-team")
+        assert store.get_session("feishu", "c1", "t1")["agent"] == "software-team"
+        store.clear_agent("feishu", "c1")
+        assert store.get_session("feishu", "c1", "t1").get("agent") is None
+
+    def test_switch_session_restores_full_context(self, store):
+        # 会话1 在 software-team + gpt-x 下创建
+        store.set_agent("feishu", "c1", "software-team")
+        store.set_model("feishu", "c1", "gpt-x")
+        store.set_thread_id("feishu", "c1", "t1")
+        store.add_session("feishu", "c1", "t1")
+        # 新开会话2 并回落默认人设/模型（变更同步到当前会话 t2）
+        store.set_thread_id("feishu", "c1", "t2")
+        store.add_session("feishu", "c1", "t2")
+        store.clear_agent("feishu", "c1")
+        store.clear_model("feishu", "c1")
+        # 切回会话1：恢复 software-team + gpt-x
+        snap = store.switch_session("feishu", "c1", "t1")
+        assert snap["agent"] == "software-team"
+        assert snap["model"] == "gpt-x"
+        assert store.get_thread_id("feishu", "c1") == "t1"
+        assert store.get_agent("feishu", "c1") == "software-team"
+        assert store.get_model("feishu", "c1") == "gpt-x"
+        # 切到会话2：回落默认（无覆盖）
+        store.switch_session("feishu", "c1", "t2")
+        assert store.get_agent("feishu", "c1") is None
+        assert store.get_model("feishu", "c1") is None
+
+    def test_switch_missing_session_returns_none(self, store):
+        assert store.switch_session("feishu", "c1", "nope") is None
+
+    def test_remove_non_current_session(self, store):
+        store.set_thread_id("feishu", "c1", "t1")
+        store.add_session("feishu", "c1", "t1")
+        store.set_thread_id("feishu", "c1", "t2")
+        store.add_session("feishu", "c1", "t2")
+        result = store.remove_session("feishu", "c1", "t1")
+        assert result["removed"] is True
+        assert result["was_current"] is False
+        assert {s["thread_id"] for s in store.list_sessions("feishu", "c1")} == {"t2"}
+        assert store.get_thread_id("feishu", "c1") == "t2"
+
+    def test_remove_current_session_switches_to_recent(self, store):
+        store.set_thread_id("feishu", "c1", "t1")
+        store.add_session("feishu", "c1", "t1")
+        store.set_thread_id("feishu", "c1", "t2")
+        store.add_session("feishu", "c1", "t2")
+        # 当前是 t2；删除 t2 应回落到最近的剩余会话 t1
+        result = store.remove_session("feishu", "c1", "t2")
+        assert result["was_current"] is True
+        assert result["new_current"] == "t1"
+        assert store.get_thread_id("feishu", "c1") == "t1"
+
+    def test_remove_last_session_clears_pointer(self, store):
+        store.set_thread_id("feishu", "c1", "t1")
+        store.add_session("feishu", "c1", "t1")
+        result = store.remove_session("feishu", "c1", "t1")
+        assert result["was_current"] is True
+        assert result["new_current"] is None
+        assert store.get_thread_id("feishu", "c1") is None
+
+    def test_remove_missing_session_returns_false(self, store):
+        assert store.remove_session("feishu", "c1", "nope")["removed"] is False
+
+    def test_touch_creates_missing_session(self, store):
+        # 兼容旧线程：touch 时若注册表无记录则补建
+        store.touch_session("feishu", "c1", "legacy-thread")
+        assert store.get_session("feishu", "c1", "legacy-thread") is not None
+
+    def test_sessions_persist_across_reload(self, tmp_path):
+        path = tmp_path / "store.json"
+        store1 = ChannelStore(path=path)
+        store1.set_thread_id("feishu", "c1", "t1")
+        store1.add_session("feishu", "c1", "t1")
+        store1.set_session_title("feishu", "c1", "t1", "持久会话")
+        store2 = ChannelStore(path=path)
+        assert store2.get_session("feishu", "c1", "t1")["title"] == "持久会话"
+
+    def test_add_session_prunes_oldest_beyond_limit(self, store):
+        # 收紧上限便于测试；当前会话永不裁剪
+        store.SESSION_LIMIT = 3
+        store.set_thread_id("feishu", "c1", "cur")
+        store.add_session("feishu", "c1", "cur")
+        for i in range(6):
+            store.add_session("feishu", "c1", f"t{i}")
+        ids = {s["thread_id"] for s in store.list_sessions("feishu", "c1")}
+        assert len(ids) <= 3
+        assert "cur" in ids  # 当前会话不被裁剪
+
+    def test_concurrent_list_while_mutating_does_not_crash(self, store):
+        # 加锁冒烟：一个线程反复增删，另一个线程反复 list，不应抛
+        # "dictionary changed size during iteration"。
+        import threading
+
+        for i in range(30):
+            store.add_session("feishu", "c1", f"t{i}")
+
+        errors: list[Exception] = []
+        stop = threading.Event()
+
+        def churn():
+            i = 0
+            while not stop.is_set():
+                store.add_session("feishu", "c1", f"x{i % 50}")
+                store.remove_session("feishu", "c1", f"x{i % 50}")
+                i += 1
+
+        def lister():
+            try:
+                for _ in range(200):
+                    store.list_sessions("feishu", "c1")
+            except Exception as exc:  # noqa: BLE001 - 测试断言用
+                errors.append(exc)
+
+        writer = threading.Thread(target=churn)
+        reader = threading.Thread(target=lister)
+        writer.start()
+        reader.start()
+        reader.join(timeout=10)
+        stop.set()
+        writer.join(timeout=10)
+        assert errors == []
+
+
+# ---------------------------------------------------------------------------
 # Channel base class tests
 # ---------------------------------------------------------------------------
 
@@ -3451,3 +3625,274 @@ class TestFeishuMemoryModelCards:
 
         # 无 operator → None
         assert FeishuChannel._card_action_open_id(SimpleNamespace(operator=None)) is None
+
+
+# ---------------------------------------------------------------------------
+# ChannelManager — /sessions 命令、会话注册与标题缓存
+# ---------------------------------------------------------------------------
+
+
+class TestChannelManagerSessions:
+    """/sessions 命令、会话注册与自动标题缓存（mock Gateway 客户端）。"""
+
+    @staticmethod
+    def _manager(bus):
+        store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+        from app.channels.manager import ChannelManager
+
+        return ChannelManager(bus=bus, store=store), store
+
+    def test_new_registers_session_and_keeps_old(self):
+        async def go():
+            bus = MessageBus()
+            manager, store = self._manager(bus)
+            store.set_thread_id("test", "chat1", "old-thread")
+            store.add_session("test", "chat1", "old-thread")
+            manager._client = _make_mock_langgraph_client(thread_id="new-thread")
+
+            received = []
+
+            async def capture(msg):
+                received.append(msg)
+
+            bus.subscribe_outbound(capture)
+            await manager.start()
+            await bus.publish_inbound(InboundMessage(channel_name="test", chat_id="chat1", user_id="u1", text="/new", msg_type=InboundMessageType.COMMAND))
+            await _wait_for(lambda: len(received) >= 1)
+            await manager.stop()
+
+            # /new 切到新线程，但旧会话仍保留在注册表（不再被遗弃）
+            assert store.get_thread_id("test", "chat1") == "new-thread"
+            assert {s["thread_id"] for s in store.list_sessions("test", "chat1")} == {"old-thread", "new-thread"}
+
+        _run(go())
+
+    def test_records_title_after_chat(self):
+        async def go():
+            bus = MessageBus()
+            manager, store = self._manager(bus)
+            run_result = {
+                "messages": [
+                    {"type": "human", "content": "帮我规划健身"},
+                    {"type": "ai", "content": "好的，这是计划"},
+                ],
+                "title": "健身计划咨询",
+            }
+            manager._client = _make_mock_langgraph_client(thread_id="t-abc", run_result=run_result)
+
+            received = []
+
+            async def capture(msg):
+                received.append(msg)
+
+            bus.subscribe_outbound(capture)
+            await manager.start()
+            await bus.publish_inbound(InboundMessage(channel_name="test", chat_id="chat1", user_id="u1", text="帮我规划健身"))
+            await _wait_for(lambda: len(received) >= 1)
+            await manager.stop()
+
+            session = store.get_session("test", "chat1", "t-abc")
+            assert session is not None
+            assert session["title"] == "健身计划咨询"
+
+        _run(go())
+
+    def test_sessions_list_command(self):
+        async def go():
+            bus = MessageBus()
+            manager, store = self._manager(bus)
+            store.add_session("test", "chat1", "t1")
+            store.set_session_title("test", "chat1", "t1", "会话甲")
+            store.add_session("test", "chat1", "t2")
+            store.set_session_title("test", "chat1", "t2", "会话乙")
+
+            received = []
+
+            async def capture(msg):
+                received.append(msg)
+
+            bus.subscribe_outbound(capture)
+            await manager.start()
+            await bus.publish_inbound(InboundMessage(channel_name="test", chat_id="chat1", user_id="u1", text="/sessions", msg_type=InboundMessageType.COMMAND))
+            await _wait_for(lambda: len(received) >= 1)
+            await manager.stop()
+
+            text = received[0].text
+            assert "会话甲" in text and "会话乙" in text
+
+        _run(go())
+
+    def test_sessions_switch_command_restores_settings(self):
+        async def go():
+            bus = MessageBus()
+            manager, store = self._manager(bus)
+            # t1 在 software-team 下创建
+            store.set_agent("test", "chat1", "software-team")
+            store.set_thread_id("test", "chat1", "t1")
+            store.add_session("test", "chat1", "t1")
+            # 新开 t2 并清人设
+            store.set_thread_id("test", "chat1", "t2")
+            store.add_session("test", "chat1", "t2")
+            store.clear_agent("test", "chat1")
+
+            received = []
+
+            async def capture(msg):
+                received.append(msg)
+
+            bus.subscribe_outbound(capture)
+            await manager.start()
+            await bus.publish_inbound(InboundMessage(channel_name="test", chat_id="chat1", user_id="u1", text="/sessions switch t1", msg_type=InboundMessageType.COMMAND))
+            await _wait_for(lambda: len(received) >= 1)
+            await manager.stop()
+
+            assert store.get_thread_id("test", "chat1") == "t1"
+            assert store.get_agent("test", "chat1") == "software-team"
+
+        _run(go())
+
+    def test_sessions_delete_command_calls_gateway(self):
+        async def go():
+            bus = MessageBus()
+            manager, store = self._manager(bus)
+            store.add_session("test", "chat1", "t1")
+            store.add_session("test", "chat1", "t2")
+            mock_client = _make_mock_langgraph_client()
+            mock_client.threads.delete = AsyncMock()
+            manager._client = mock_client
+
+            received = []
+
+            async def capture(msg):
+                received.append(msg)
+
+            bus.subscribe_outbound(capture)
+            await manager.start()
+            await bus.publish_inbound(InboundMessage(channel_name="test", chat_id="chat1", user_id="u1", text="/sessions delete t1", msg_type=InboundMessageType.COMMAND))
+            await _wait_for(lambda: len(received) >= 1)
+            await manager.stop()
+
+            mock_client.threads.delete.assert_awaited_once_with("t1")
+            assert {s["thread_id"] for s in store.list_sessions("test", "chat1")} == {"t2"}
+
+        _run(go())
+
+    def test_sessions_gcdelete_is_silent(self):
+        """内部 _gcdelete 命令只删 Gateway 线程，不产生任何 outbound（卡片侧已本地处理）。"""
+
+        async def go():
+            bus = MessageBus()
+            manager, store = self._manager(bus)
+            mock_client = _make_mock_langgraph_client()
+            mock_client.threads.delete = AsyncMock()
+            manager._client = mock_client
+
+            received = []
+
+            async def capture(msg):
+                received.append(msg)
+
+            bus.subscribe_outbound(capture)
+            await manager.start()
+            await bus.publish_inbound(InboundMessage(channel_name="test", chat_id="chat1", user_id="u1", text="/sessions _gcdelete t1", msg_type=InboundMessageType.COMMAND))
+            await _wait_for(lambda: mock_client.threads.delete.await_count >= 1)
+            await manager.stop()
+
+            mock_client.threads.delete.assert_awaited_once_with("t1")
+            assert received == []  # 静默：无回复
+
+        _run(go())
+
+
+# ---------------------------------------------------------------------------
+# FeishuChannel — 会话管理卡片与回调动作
+# ---------------------------------------------------------------------------
+
+
+class TestFeishuSessionCard:
+    """飞书会话管理卡片的构建与回调动作（不触发 lark 网络）。"""
+
+    @staticmethod
+    def _iter_buttons(card: dict):
+        for el in card["elements"]:
+            if el.get("tag") == "action":
+                yield from el["actions"]
+
+    def test_build_sessions_card_marks_current_and_has_actions(self):
+        from app.channels.feishu import FeishuChannel
+
+        sessions = [
+            {"thread_id": "t1", "title": "会话甲", "agent": "software-team", "updated_at": 0.0},
+            {"thread_id": "t2", "title": "会话乙", "agent": None, "updated_at": 0.0},
+        ]
+        card = FeishuChannel._build_sessions_card(sessions, current_thread_id="t1")
+        blob = json.dumps(card, ensure_ascii=False)
+        assert "会话甲" in blob and "会话乙" in blob
+        actions = {b["value"]["action"] for b in self._iter_buttons(card)}
+        assert {"switch_session", "view_session", "delete_session", "new_session"} <= actions
+        markdowns = [el["content"] for el in card["elements"] if el.get("tag") == "markdown"]
+        assert any("（当前）" in m and "会话甲" in m for m in markdowns)
+
+    def test_build_sessions_card_empty(self):
+        from app.channels.feishu import FeishuChannel
+
+        card = FeishuChannel._build_sessions_card([], current_thread_id=None)
+        blob = json.dumps(card, ensure_ascii=False)
+        assert "new_session" in blob
+        assert "没有会话记录" in blob
+
+    def test_switch_session_card_action_is_local(self):
+        from app.channels.feishu import FeishuChannel
+
+        bus = MessageBus()
+        store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+        channel = FeishuChannel(bus, config={"channel_store": store})
+        store.set_thread_id("feishu", "chat-1", "t1")
+        store.add_session("feishu", "chat-1", "t1")
+        store.set_thread_id("feishu", "chat-1", "t2")
+        store.add_session("feishu", "chat-1", "t2")
+
+        event = SimpleNamespace(operator=SimpleNamespace(open_id="ou_x"))
+        resp = channel._handle_session_action(event, store, "chat-1", "switch_session", {"thread_id": "t1"})
+        assert resp is not None
+        # 纯本地切换：当前指针指向 t1
+        assert store.get_thread_id("feishu", "chat-1") == "t1"
+
+    def test_delete_session_card_action_removes_locally_and_gc(self):
+        from app.channels.feishu import FeishuChannel
+
+        bus = MessageBus()
+        store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+        channel = FeishuChannel(bus, config={"channel_store": store})
+        store.add_session("feishu", "chat-1", "t1")
+        store.add_session("feishu", "chat-1", "t2")
+
+        published: list[tuple[str, bool]] = []
+        channel._publish_session_command = lambda chat_id, open_id, text, *, silent=False: published.append((text, silent))
+
+        event = SimpleNamespace(operator=SimpleNamespace(open_id="ou_x"))
+        resp = channel._handle_session_action(event, store, "chat-1", "delete_session", {"thread_id": "t1"})
+
+        # 本地即时移除，并即时刷新卡片
+        assert resp is not None
+        assert {s["thread_id"] for s in store.list_sessions("feishu", "chat-1")} == {"t2"}
+        # Gateway 清理走静默 _gcdelete 命令
+        assert ("/sessions _gcdelete t1", True) in published
+
+    def test_view_new_card_actions_route_to_bus(self):
+        from app.channels.feishu import FeishuChannel
+
+        bus = MessageBus()
+        store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+        channel = FeishuChannel(bus, config={"channel_store": store})
+        store.add_session("feishu", "chat-1", "t1")
+
+        published: list[str] = []
+        channel._publish_session_command = lambda chat_id, open_id, text, *, silent=False: published.append(text)
+
+        event = SimpleNamespace(operator=SimpleNamespace(open_id="ou_x"))
+        channel._handle_session_action(event, store, "chat-1", "view_session", {"thread_id": "t1"})
+        channel._handle_session_action(event, store, "chat-1", "new_session", {})
+
+        assert "/sessions view t1" in published
+        assert "/new" in published

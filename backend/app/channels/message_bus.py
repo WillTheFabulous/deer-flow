@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 PENDING_CLARIFICATION_METADATA_KEY = "pending_clarification"
 RESOLVED_FROM_PENDING_CLARIFICATION_METADATA_KEY = "resolved_from_pending_clarification"
+# 标记一条 outbound 为“独立通知”（如子任务失败/超时）：渠道应另发一条新消息，
+# 不要去 patch/复用正在运行的卡片。
+NOTIFICATION_METADATA_KEY = "is_notification"
 
 
 # ---------------------------------------------------------------------------

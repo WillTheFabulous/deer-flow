@@ -14,6 +14,7 @@ from app.channels.base import Channel
 from app.channels.commands import KNOWN_CHANNEL_COMMANDS
 from app.channels.memory_view import MEMORY_SCOPES, render_memory
 from app.channels.message_bus import (
+    NOTIFICATION_METADATA_KEY,
     PENDING_CLARIFICATION_METADATA_KEY,
     RESOLVED_FROM_PENDING_CLARIFICATION_METADATA_KEY,
     InboundMessage,
@@ -445,6 +446,16 @@ class FeishuChannel(Channel):
         }
         return json.dumps(card)
 
+    @staticmethod
+    def _build_notification_card(text: str, *, title: str = "子任务执行失败") -> str:
+        """构建带红色标题的通知卡片（用于失败/超时等需要醒目的独立提醒）。"""
+        card = {
+            "config": {"wide_screen_mode": True, "update_multi": True},
+            "header": {"title": {"tag": "plain_text", "content": title}, "template": "red"},
+            "elements": [{"tag": "markdown", "content": text}],
+        }
+        return json.dumps(card)
+
     # todo / 子任务状态 -> 展示图标
     _TODO_STATUS_ICONS = {
         "completed": "✅",
@@ -478,7 +489,11 @@ class FeishuChannel(Channel):
             for step in running:
                 desc = str(step.get("description", "")).strip()
                 if desc:
-                    lines.append(f"🔧 正在执行：{desc}")
+                    line = f"🔧 正在执行：{desc}"
+                    activity = str(step.get("activity", "")).strip()
+                    if activity:
+                        line += f"\n   ↳ {activity}"
+                    lines.append(line)
 
         return "\n".join(lines)
 
@@ -712,6 +727,146 @@ class FeishuChannel(Channel):
         except Exception:
             logger.exception("[Feishu] failed to create agent card via %s", receive_id_type)
 
+    # -- 会话管理卡片（多会话：切换 / 查看 / 删除 / 新建）------------------------
+
+    _SESSIONS_CARD_MAX = 15
+
+    @staticmethod
+    def _session_title(session: dict[str, Any]) -> str:
+        title = session.get("title")
+        return title.strip() if isinstance(title, str) and title.strip() else "未命名会话"
+
+    @staticmethod
+    def _session_persona_label(agent: Any) -> str:
+        from app.channels.personas import DEFAULT_PERSONA, DEFAULT_PERSONA_LABEL
+
+        if not isinstance(agent, str) or not agent.strip() or agent == DEFAULT_PERSONA:
+            return DEFAULT_PERSONA_LABEL
+        return agent
+
+    @staticmethod
+    def _session_relative_time(ts: Any) -> str:
+        try:
+            delta = max(0.0, time.time() - float(ts))
+        except (TypeError, ValueError):
+            return ""
+        if delta < 60:
+            return "刚刚"
+        if delta < 3600:
+            return f"{int(delta // 60)}分钟前"
+        if delta < 86400:
+            return f"{int(delta // 3600)}小时前"
+        return f"{int(delta // 86400)}天前"
+
+    @classmethod
+    def _build_sessions_card(cls, sessions: list[dict[str, Any]], current_thread_id: str | None) -> dict[str, Any]:
+        """构建会话管理卡片（dict 形式，发送与回调更新共用）。"""
+        elements: list[dict[str, Any]] = []
+        if not sessions:
+            elements.append({"tag": "markdown", "content": "当前没有会话记录。直接发消息即可开始第一个会话。"})
+        else:
+            elements.append({"tag": "markdown", "content": f"共 **{len(sessions)}** 个会话，点按钮切换 / 查看 / 删除："})
+            for s in sessions[: cls._SESSIONS_CARD_MAX]:
+                thread_id = str(s.get("thread_id", ""))
+                is_current = bool(thread_id) and thread_id == current_thread_id
+                title = cls._session_title(s)
+                sub_bits = [cls._session_persona_label(s.get("agent"))]
+                when = cls._session_relative_time(s.get("updated_at"))
+                if when:
+                    sub_bits.append(when)
+                head = f"**🟢 {title}**（当前）" if is_current else f"**{title}**"
+                elements.append({"tag": "markdown", "content": f"{head}\n{' · '.join(sub_bits)}"})
+                elements.append(
+                    {
+                        "tag": "action",
+                        "actions": [
+                            {
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": "切换"},
+                                "type": "default" if is_current else "primary",
+                                "value": {"action": "switch_session", "thread_id": thread_id},
+                            },
+                            {
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": "查看"},
+                                "type": "default",
+                                "value": {"action": "view_session", "thread_id": thread_id},
+                            },
+                            {
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": "删除"},
+                                "type": "danger",
+                                "value": {"action": "delete_session", "thread_id": thread_id},
+                            },
+                        ],
+                    }
+                )
+            if len(sessions) > cls._SESSIONS_CARD_MAX:
+                elements.append({"tag": "markdown", "content": f"（仅显示最近 {cls._SESSIONS_CARD_MAX} 个，用 /sessions 查看全部）"})
+
+        elements.append({"tag": "hr"})
+        elements.append(
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "＋ 新会话"},
+                        "type": "primary",
+                        "value": {"action": "new_session"},
+                    }
+                ],
+            }
+        )
+        elements.append(
+            {
+                "tag": "note",
+                "elements": [{"tag": "plain_text", "content": "切换后继续发消息即可在该会话上下文中对话；删除不可恢复。"}],
+            }
+        )
+        return {
+            "config": {"wide_screen_mode": True, "update_multi": True},
+            "header": {"title": {"tag": "plain_text", "content": "会话管理"}, "template": "blue"},
+            "elements": elements,
+        }
+
+    def _sessions_card_for_chat(self, chat_id: str) -> dict[str, Any]:
+        """根据该会话的 store 状态构建会话管理卡片。"""
+        store = self._channel_store()
+        sessions = store.list_sessions(self.name, chat_id) if (store and chat_id) else []
+        # 会话注册表按 chat 级（topic_id=None）维护，当前指针同样取 chat 级。
+        current = store.get_thread_id(self.name, chat_id) if (store and chat_id) else None
+        return self._build_sessions_card(sessions, current)
+
+    async def _send_sessions_card(self, message_id: str, chat_id: str) -> None:
+        """回复 /sessions：发送会话管理卡片。"""
+        if not self._api_client:
+            return
+        try:
+            content = json.dumps(self._sessions_card_for_chat(chat_id))
+            body = self._ReplyMessageRequestBody.builder().msg_type("interactive").content(content).reply_in_thread(self._reply_in_thread_for(chat_id)).build()
+            request = self._ReplyMessageRequest.builder().message_id(message_id).request_body(body).build()
+            await asyncio.to_thread(self._api_client.im.v1.message.reply, request)
+            logger.info("[Feishu] sessions card sent: chat_id=%s", chat_id)
+        except Exception:
+            logger.exception("[Feishu] failed to send sessions card: chat_id=%s", chat_id)
+
+    async def _send_sessions_card_create(self, *, chat_id: str | None, open_id: str | None) -> None:
+        """以新消息方式发送会话管理卡片（机器人菜单触发，无源消息可回复）。"""
+        if not self._api_client:
+            return
+        receive_id = chat_id or open_id
+        if not receive_id:
+            return
+        receive_id_type = "chat_id" if chat_id else "open_id"
+        try:
+            content = json.dumps(self._sessions_card_for_chat(chat_id or ""))
+            request = self._CreateMessageRequest.builder().receive_id_type(receive_id_type).request_body(self._CreateMessageRequestBody.builder().receive_id(receive_id).msg_type("interactive").content(content).build()).build()
+            await asyncio.to_thread(self._api_client.im.v1.message.create, request)
+            logger.info("[Feishu] sessions card created via %s=%s", receive_id_type, receive_id)
+        except Exception:
+            logger.exception("[Feishu] failed to create sessions card via %s", receive_id_type)
+
     # -- 记忆查看卡片 --------------------------------------------------------
 
     _MEMORY_SCOPE_LABELS = {
@@ -898,13 +1053,16 @@ class FeishuChannel(Channel):
         except Exception:
             logger.exception("[Feishu] failed to send text via open_id")
 
-    # 固定菜单项 event_key -> 命令。另有约定前缀 AGENT_<NAME>（不在此表里），
-    # 由 _on_bot_menu 动态解析为 /agent <name>，实现菜单里直接选择人设：
-    #   AGENT_DEFAULT -> /agent default（通用助手）；AGENT_SOFTWARE_TEAM -> /agent software-team。
+    # 固定菜单项 event_key -> 命令。在飞书后台「应用能力→机器人→自定义菜单」新增菜单项、
+    # 选「事件推送」、event_key 填下表对应值即可（不区分大小写，_on_bot_menu 会 .upper()）：
+    #   REPO=工作目录、AGENT=人设、SESSIONS=会话管理、STATUS=状态、NEW=新会话、MODELS=模型、MEMORY=记忆。
+    # 另有约定前缀 AGENT_<NAME>（不在此表里），由 _on_bot_menu 动态解析为 /agent <name>，
+    # 实现菜单里直接选择人设：AGENT_DEFAULT -> /agent default；AGENT_SOFTWARE_TEAM -> /agent software-team。
     # 新增人设无需改代码，只在飞书后台加一个 event_key=AGENT_<名> 的菜单项即可。
     _MENU_COMMAND_MAP = {
         "REPO": "/repo",
         "AGENT": "/agent",
+        "SESSIONS": "/sessions",
         "STATUS": "/status",
         "NEW": "/new",
         "HELP": "/help",
@@ -952,6 +1110,11 @@ class FeishuChannel(Channel):
                 fut.add_done_callback(lambda f: self._log_future_error(f, "menu_agent_card", event_key))
                 return
 
+            if command == "/sessions":
+                fut = asyncio.run_coroutine_threadsafe(self._send_sessions_card_create(chat_id=chat_id, open_id=open_id), self._main_loop)
+                fut.add_done_callback(lambda f: self._log_future_error(f, "menu_sessions_card", event_key))
+                return
+
             if command == "/memory":
                 fut = asyncio.run_coroutine_threadsafe(self._send_memory_card_create(chat_id=chat_id, open_id=open_id), self._main_loop)
                 fut.add_done_callback(lambda f: self._log_future_error(f, "menu_memory_card", event_key))
@@ -985,6 +1148,7 @@ class FeishuChannel(Channel):
     _AGENT_ACTIONS = ("set_agent", "clear_agent")
     _MODEL_ACTIONS = ("set_model", "clear_model")
     _MEMORY_ACTIONS = ("view_memory",)
+    _SESSION_ACTIONS = ("switch_session", "view_session", "delete_session", "new_session")
 
     @staticmethod
     def _card_action_open_id(event) -> str | None:
@@ -1010,9 +1174,13 @@ class FeishuChannel(Channel):
             chat_id = event.context.open_chat_id if event and event.context else None
             store = self._channel_store()
 
-            known_actions = (*self._WORKDIR_ACTIONS, *self._AGENT_ACTIONS, *self._MODEL_ACTIONS, *self._MEMORY_ACTIONS)
+            known_actions = (*self._WORKDIR_ACTIONS, *self._AGENT_ACTIONS, *self._MODEL_ACTIONS, *self._MEMORY_ACTIONS, *self._SESSION_ACTIONS)
             if not chat_id or store is None or action not in known_actions:
                 return P2CardActionTriggerResponse({})
+
+            if action in self._SESSION_ACTIONS:
+                # 切换为纯本地操作（即时刷新卡片）；查看/删除/新建经总线交给 manager（持有 Gateway 客户端）
+                return self._handle_session_action(event, store, chat_id, action, value)
 
             if action in self._MEMORY_ACTIONS:
                 # 记忆查看不改状态：按点击者身份渲染对应范围内容并原地刷新卡片
@@ -1120,6 +1288,75 @@ class FeishuChannel(Channel):
         store.set_agent(self.name, chat_id, persona)
         return {"type": "success", "content": f"人设已切换：{persona}"}
 
+    def _handle_session_action(self, event, store, chat_id: str, action: str, value: dict):
+        """处理会话管理卡片按钮：
+
+        - switch_session：纯本地切换（恢复 人设/模型/工作目录）+ 原地刷新卡片；
+        - view_session / delete_session / new_session：发合成命令给 manager（经总线，Gateway 访问留在 manager）。
+        """
+        from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTriggerResponse
+
+        open_id = self._card_action_open_id(event)
+
+        if action == "new_session":
+            self._publish_session_command(chat_id, open_id, "/new")
+            return P2CardActionTriggerResponse({"toast": {"type": "info", "content": "正在新建会话…"}})
+
+        thread_id = value.get("thread_id")
+        if not isinstance(thread_id, str) or not thread_id:
+            return P2CardActionTriggerResponse({"toast": {"type": "error", "content": "无效的会话"}})
+
+        if action == "switch_session":
+            snapshot = store.switch_session(self.name, chat_id, thread_id)
+            if snapshot is None:
+                return P2CardActionTriggerResponse({"toast": {"type": "error", "content": "会话不存在"}})
+            card = self._sessions_card_for_chat(chat_id)
+            logger.info("[Feishu] card action switch_session handled: chat_id=%s", chat_id)
+            return P2CardActionTriggerResponse(
+                {
+                    "toast": {"type": "success", "content": f"已切换：{self._session_title(snapshot)}"},
+                    "card": {"type": "raw", "data": card},
+                }
+            )
+
+        if action == "view_session":
+            self._publish_session_command(chat_id, open_id, f"/sessions view {thread_id}")
+            return P2CardActionTriggerResponse({"toast": {"type": "info", "content": "正在查看会话…"}})
+
+        if action == "delete_session":
+            # 本地即时移除并刷新卡片；Gateway 线程清理交给 manager 静默处理（持有 client）
+            result = store.remove_session(self.name, chat_id, thread_id)
+            self._publish_session_command(chat_id, open_id, f"/sessions _gcdelete {thread_id}", silent=True)
+            card = self._sessions_card_for_chat(chat_id)
+            removed = bool(result.get("removed"))
+            logger.info("[Feishu] card action delete_session handled: chat_id=%s removed=%s", chat_id, removed)
+            return P2CardActionTriggerResponse(
+                {
+                    "toast": {"type": "success", "content": "已删除"} if removed else {"type": "error", "content": "会话不存在"},
+                    "card": {"type": "raw", "data": card},
+                }
+            )
+
+        return P2CardActionTriggerResponse({"toast": {"type": "error", "content": "未知操作"}})
+
+    def _publish_session_command(self, chat_id: str, open_id: str | None, text: str, *, silent: bool = False) -> None:
+        """从卡片回调（lark 线程）向总线投递一条合成命令，交给 ChannelManager 处理。
+
+        silent=True 标记本命令仅做后台清理（如 _gcdelete），manager 处理后不回消息。
+        """
+        if not (self._main_loop and self._main_loop.is_running()):
+            logger.warning("[Feishu] main loop not running, dropping card session command: %s", text)
+            return
+        inbound = self._make_inbound(
+            chat_id=chat_id,
+            user_id=open_id or "",
+            text=text,
+            msg_type=InboundMessageType.COMMAND,
+            metadata={"user_id": open_id, "source": "card_action", "session_silent": silent},
+        )
+        fut = asyncio.run_coroutine_threadsafe(self.bus.publish_inbound(inbound), self._main_loop)
+        fut.add_done_callback(lambda f: self._log_future_error(f, "card_session_command", text))
+
     # -- reaction helpers --------------------------------------------------
 
     async def _add_reaction(self, message_id: str, emoji_type: str = "THUMBSUP") -> None:
@@ -1139,6 +1376,17 @@ class FeishuChannel(Channel):
             return None
 
         content = self._build_card_content(text)
+        request = self._ReplyMessageRequest.builder().message_id(message_id).request_body(self._ReplyMessageRequestBody.builder().msg_type("interactive").content(content).reply_in_thread(in_thread).build()).build()
+        response = await asyncio.to_thread(self._api_client.im.v1.message.reply, request)
+        response_data = getattr(response, "data", None)
+        return getattr(response_data, "message_id", None)
+
+    async def _reply_notification_card(self, message_id: str, text: str, *, in_thread: bool = True) -> str | None:
+        """以红头通知卡片回复一条新消息（不复用运行卡），返回新卡片消息 ID。"""
+        if not self._api_client:
+            return None
+
+        content = self._build_notification_card(text)
         request = self._ReplyMessageRequest.builder().message_id(message_id).request_body(self._ReplyMessageRequestBody.builder().msg_type("interactive").content(content).reply_in_thread(in_thread).build()).build()
         response = await asyncio.to_thread(self._api_client.im.v1.message.reply, request)
         response_data = getattr(response, "data", None)
@@ -1222,6 +1470,19 @@ class FeishuChannel(Channel):
     async def _send_card_message(self, msg: OutboundMessage) -> None:
         """Send or update the Feishu card tied to the current request."""
         in_thread = self._reply_in_thread_for(msg.chat_id)
+
+        # 独立通知（如子任务失败/超时）：另发一条红头卡片，不去 patch/复用运行卡，
+        # 也不加 DONE 反应——避免打断正在进行的运行卡。
+        if msg.metadata.get(NOTIFICATION_METADATA_KEY):
+            source_message_id = msg.thread_ts
+            if source_message_id:
+                await self._reply_notification_card(source_message_id, msg.text, in_thread=in_thread)
+            elif self._api_client:
+                content = self._build_notification_card(msg.text)
+                request = self._CreateMessageRequest.builder().receive_id_type("chat_id").request_body(self._CreateMessageRequestBody.builder().receive_id(msg.chat_id).msg_type("interactive").content(content).build()).build()
+                await asyncio.to_thread(self._api_client.im.v1.message.create, request)
+            return
+
         # 在正文上方拼接流水线进度块（plan mode todos + 子任务步骤）
         card_text = self._compose_card_text(msg)
         source_message_id = msg.thread_ts
@@ -1543,6 +1804,13 @@ class FeishuChannel(Channel):
                 if self._main_loop and self._main_loop.is_running():
                     fut = asyncio.run_coroutine_threadsafe(self._send_agent_card(msg_id, chat_id), self._main_loop)
                     fut.add_done_callback(lambda f, mid=msg_id: self._log_future_error(f, "send_agent_card", mid))
+                return
+
+            # 裸 /sessions 回复会话管理卡片；带参数（/sessions switch 1 等）仍走文本命令。
+            if text.lower() == "/sessions":
+                if self._main_loop and self._main_loop.is_running():
+                    fut = asyncio.run_coroutine_threadsafe(self._send_sessions_card(msg_id, chat_id), self._main_loop)
+                    fut.add_done_callback(lambda f, mid=msg_id: self._log_future_error(f, "send_sessions_card", mid))
                 return
 
             # 裸 /memory、/models 同样回复交互式卡片；带参数（/memory global、/model x）仍走文本命令。

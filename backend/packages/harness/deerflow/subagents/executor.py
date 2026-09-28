@@ -593,6 +593,10 @@ class SubagentExecutor:
                             ai_messages.append(message_dict)
                             logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} captured AI message #{len(ai_messages)}")
 
+                # 运行中实时刷新累计 token 快照，供父 run（task_tool 增量上报）读到 live 值。
+                # collector 单调累加且每条 source_run_id 稳定，父 journal 按 source 去重，故重复写安全。
+                result.token_usage_records = collector.snapshot_records()
+
             logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} completed async execution")
             token_usage_records = collector.snapshot_records()
             final_result: str | None = None

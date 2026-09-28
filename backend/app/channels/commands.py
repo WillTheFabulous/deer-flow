@@ -12,6 +12,7 @@ KNOWN_CHANNEL_COMMANDS: frozenset[str] = frozenset(
     {
         "/bootstrap",
         "/new",
+        "/sessions",
         "/status",
         "/models",
         "/model",
