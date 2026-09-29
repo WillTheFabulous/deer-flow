@@ -3,7 +3,7 @@
 
 ## 当前阶段
 
-代码移植与验证完成，**等待用户确认 force-push `main`**；主目录切换与容器重建尚未执行（线上仍跑 `legacy/fork-2026-06`）。
+代码移植与验证完成，`main` 已于 2026-09-29 force-with-lease 推送（`60270043` → `3759de00`）。**主目录切换与容器重建尚未执行**（线上仍跑 `legacy/fork-2026-06`）。
 
 ## 已完成
 
@@ -26,7 +26,7 @@
 
 ## 下一步
 
-1. **用户确认后推送**：`git -C /work/deerflow/deer-flow branch -f main sync/upstream-2026-09 && git push --force-with-lease origin main`（`main` 旧状态已由 `legacy/fork-2026-06` / tag 保留）。
+1. ~~推送 `main`~~：已完成（旧状态由 `legacy/fork-2026-06` 分支与 tag `fork-legacy-20260928` 保留）。之后的提交直接进 `main`，worktree `/work/deerflow/deer-flow-sync` 可在切换完成后删除（`git worktree remove`）。
 2. **切换与重建**（需要短暂停机，飞书机器人会离线几分钟）：按 `DEPLOYMENT.md`「上游同步与切换」执行，要点：
    - 从 `.env` 删除 `UV_INDEX_URL`；在 `docker/.env` 写 `BIND_HOST=0.0.0.0`；
    - 自建 `local-uv:0.11.1` 镜像（命令见 DEPLOYMENT.md）；

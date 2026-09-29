@@ -8,6 +8,7 @@
 - 以 `upstream/main`（PR #5990）为基线重建 fork，逐项移植：cursor-agent overlay、子代理 thinking 开关、飞书功能包（`app/channels/fork/`）、`/status` 子任务 token、config.yaml 迁移到 `config_version 50`。
 - 决策：`flatten_p2p` 废弃（上游原生）；人设改走上游线程钉住机制；不移植 harness 层的子任务 token 增量上报。
 - 验证：ruff 全量通过；全量单测 21,202 通过 / 3 失败（均为宿主机缺 `/etc/mime.types` 导致的 `.xhtml` 环境性失败）；`config.yaml` 经 `AppConfig` 加载校验。
+- 已推送：origin `main` `60270043` → `3759de00`（force-with-lease）；主目录切换与容器重建待执行。
 - 详情：`feature-plans/upstream-sync-2026-09/`。
 
 ### 2026-09-29 Cursor Rules 与 Memory Bank 多人模式
