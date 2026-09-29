@@ -42,7 +42,7 @@ fork `WillTheFabulous/deer-flow` 原基线是上游 2026-06-09（PR #3460 附近
 | 文件 | 改动 |
 | --- | --- |
 | `backend/app/channels/store.py` | 继承 `ChannelStoreExtensionsMixin`；`get_thread_id` 用 `entry.get`；`set_thread_id` 合并写 |
-| `backend/app/channels/manager.py` | `_NullStreamObserver` 类 + `_make_stream_observer()`；`_handle_streaming_chat` 中 stream_mode / on_event / 两处 outbound metadata / finish 共 5 处调用 |
+| `backend/app/channels/manager.py` | `_NullStreamObserver` 类 + `_make_stream_observer()`；`_handle_streaming_chat` 中创建观察者 1 处 + 调用 5 处（stream_mode / on_event / 两处 outbound metadata / finish） |
 | `backend/app/channels/feishu.py` | `_build_event_handler` 拆出 `_event_handler_builder()` |
 | `backend/app/channels/service.py` | 注册表 `feishu` 指向 `ForkFeishuChannel`；构造 `ForkChannelManager` |
 | `backend/app/channels/commands.py` | `KNOWN_CHANNEL_COMMANDS` 加 `/model` `/repo` `/sessions` |

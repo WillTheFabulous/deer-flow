@@ -28,6 +28,6 @@
 
 - 按 feature progress 切换主目录到 `main` 并用 `scripts/fork/rebuild-dev.sh --reset-venv` 重建 dev 容器。
 - 切换前从 `.env` 删除 `UV_INDEX_URL`；构建镜像按 `DEPLOYMENT.md` 临时改写 `uv.lock` 走阿里云镜像。
-- 局域网访问 Web 需在 `docker/.env` 写 `BIND_HOST=0.0.0.0`。
+- 局域网访问 Web 需在 `docker/.env` 写 `BIND_HOST=0.0.0.0` 与 `DEER_FLOW_DEV_ALLOWED_ORIGINS=<局域网IP>`。
 - 容器重建后跑飞书手测清单（见 feature progress）。
 - clash 代理未运行：cursor-agent 目前只能看到少数模型。

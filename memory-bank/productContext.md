@@ -7,7 +7,7 @@
 
 ## 使用入口
 
-- Web：`http://<宿主机>:2026`（dev 栈要设 `BIND_HOST=0.0.0.0` 才能局域网访问）；首次 `/setup` 建管理员。
+- Web：`http://<宿主机>:2026`（dev 栈要设 `BIND_HOST=0.0.0.0` 并把局域网 IP 加进 `DEER_FLOW_DEV_ALLOWED_ORIGINS` 才能局域网访问）；首次 `/setup` 建管理员。
 - 飞书：单聊，或群里 @机器人。渠道全是出站连接，不需要公网 IP。
 
 ## 飞书交互

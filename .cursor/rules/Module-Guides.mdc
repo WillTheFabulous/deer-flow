@@ -8,7 +8,7 @@ alwaysApply: false
 - 改 `frontend/` 前先读 `frontend/AGENTS.md` 与 `frontend/CLAUDE.md`。
 - 遵守上游硬约束：阻塞 IO 不进事件循环（用 `asyncio.to_thread`）；SDK 线程回调提交协程用 `_submit_threadsafe_coroutine()`；`ChannelStore._data` 的每次访问都持 `_lock`。
 - fork 渠道功能改 `backend/app/channels/fork/`，并补 `backend/tests/test_channels_fork.py`；子代理 thinking 开关的测试在 `backend/tests/test_subagent_thinking_config.py`。
-- 宿主机验证命令（在 `backend/` 下）：
+- 宿主机验证命令（在 `backend/` 下，先 `export DEER_FLOW_HOME=$(mktemp -d)`，避免测试写进线上数据目录）：
   - lint：`.venv/bin/ruff check . && .venv/bin/ruff format --check .`
   - 单测：`PYTHONPATH=. .venv/bin/python -m pytest tests/<file> -q`
-  - 全量：先临时移走根目录 `config.yaml`，再 `PYTHONPATH=. .venv/bin/python -m pytest -m "not live" --ignore=tests/blocking_io tests/ -q`
+  - 全量：在根目录没有 `config.yaml` 的 checkout（如临时 worktree）里跑 `PYTHONPATH=. .venv/bin/python -m pytest -m "not live" --ignore=tests/blocking_io tests/ -q`，与上游 CI 条件一致

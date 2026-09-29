@@ -28,7 +28,7 @@
 
 1. ~~推送 `main`~~：已完成（旧状态由 `legacy/fork-2026-06` 分支与 tag `fork-legacy-20260928` 保留）。之后的提交直接进 `main`，worktree `/work/deerflow/deer-flow-sync` 可在切换完成后删除（`git worktree remove`）。
 2. **切换与重建**（需要短暂停机，飞书机器人会离线几分钟）：按 `DEPLOYMENT.md`「上游同步与切换」执行，要点：
-   - 从 `.env` 删除 `UV_INDEX_URL`；在 `docker/.env` 写 `BIND_HOST=0.0.0.0`；
+   - 从 `.env` 删除 `UV_INDEX_URL`；在 `docker/.env` 写 `BIND_HOST=0.0.0.0` 与 `DEER_FLOW_DEV_ALLOWED_ORIGINS=<局域网IP>,<Tailscale IP>`；
    - 自建 `local-uv:0.11.1` 镜像（命令见 DEPLOYMENT.md）；
    - `make docker-stop` → 主目录 `git switch main` → `bash scripts/fork/rebuild-dev.sh --reset-venv`（脚本会临时改写 `uv.lock` 走阿里云镜像构建，构建完自动还原，再 `up --no-build`）；
    - 验证：`docker logs deer-flow-gateway`、`logs/gateway.log` 出现飞书连接成功；Web 2026 可访问。

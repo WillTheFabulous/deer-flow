@@ -12,7 +12,7 @@
 - fork 专属代码：`backend/app/channels/fork/`（`store_ext` / `workdir` / `personas` / `memory_view` / `progress` / `manager` / `feishu`）、`docker/docker-compose.cursor-agent.yaml`、`docker/cursor-agent-setup.sh`、`scripts/fork/rebuild-dev.sh`；fork 测试 `backend/tests/test_channels_fork.py`、`backend/tests/test_subagent_thinking_config.py`。
 - 上游文件里的挂接点（同步时逐条复核，完整清单见 `feature-plans/upstream-sync-2026-09/README.md`）：
   - `app/channels/store.py`：继承 `ChannelStoreExtensionsMixin`；`get_thread_id` 用 `entry.get`；`set_thread_id` 合并写。
-  - `app/channels/manager.py`：`_NullStreamObserver` + `_make_stream_observer()`，`_handle_streaming_chat` 里 5 处调用。
+  - `app/channels/manager.py`：`_NullStreamObserver` + `_make_stream_observer()`，`_handle_streaming_chat` 里创建观察者 1 处 + 调用 5 处。
   - `app/channels/feishu.py`：`_event_handler_builder()` 拆出 builder。
   - `app/channels/service.py`：注册表 `feishu` → `app.channels.fork.feishu:ForkFeishuChannel`；构造 `ForkChannelManager`。
   - `app/channels/commands.py` / `telegram.py` / `deerflow/skills/slash.py` / `contracts/slash_skill_contract.json` / `frontend/src/core/skills/slash.ts`：登记 `/model` `/repo` `/sessions`。
@@ -42,7 +42,7 @@
 - `config.yaml` 纳入版本管理，只写 `$VAR`；启用块放在对应注释示例块之前；fork 定制项：models、loop_detection、sandbox（host bash + mounts）、subagents、run_events、channels。
 - `models` 第一个即默认模型（title / summarization / memory 在 `model_name: null` 时复用）。
 - 豆包 thinking 走 `extra_body.thinking.type`；硅基流动走 `extra_body.enable_thinking`；MiniMax-M2.5 只能开 thinking。
-- 同步上游后先 `make config-upgrade` 合并新字段，再复核 fork 定制项；只加可选字段时不改 `config_version`。
+- 同步上游后对比新旧 `config.example.yaml` 手工合入新字段与 `config_version`，再复核 fork 定制项；**禁用 `make config-upgrade`**（`yaml.dump` 写回会删光注释）。fork 只加可选字段时不改 `config_version`。
 
 ## 6. Cursor CLI 驱动模式
 
@@ -52,7 +52,7 @@
 
 ## 7. 上游同步模式
 
-- 备份 tag → `git fetch upstream` → worktree 以 `upstream/main` 为基线重建 → 逐项移植提交 → lint + 全量单测（临时移走根目录 `config.yaml`）→ 用户确认后 force-with-lease → 主目录切换与容器重建单独做。
+- 备份 tag → `git fetch upstream` → 临时 worktree 以 `upstream/main` 为基线重建 → 逐项移植提交 → lint + 全量单测（根目录无 `config.yaml`、临时 `DEER_FLOW_HOME`）→ 用户确认后 force-with-lease → 主目录切换与容器重建单独做。
 - 上游不变式要在实现侧满足：`KNOWN_CHANNEL_COMMANDS` ⊆ Telegram 注册命令 ⊆ `RESERVED_SLASH_SKILL_NAMES`（并同步 contracts 与前端）。
 - 国内重建镜像用 `scripts/fork/rebuild-dev.sh`：`uv.lock` 临时改写为阿里云源 + 镜像 `UV_INDEX_URL` 构建 → 还原 lock → `up --no-build`；运行时容器里不能有 `UV_INDEX_URL`。
 
@@ -61,7 +61,8 @@
 ### 后端
 
 - `tests/conftest.py` 会 mock 掉 `deerflow.subagents.executor`：可测逻辑放到不被 mock 的模块（如 `subagents/config.py`）。
-- 上游 CI 不带 `config.yaml`：本地全量测试前临时移走根目录的 `config.yaml`，否则导入期读取配置的模块会因 `$VAR` 缺失报错。
+- 上游 CI 不带 `config.yaml`：全量测试要在根目录没有 `config.yaml` 的 checkout 里跑，否则导入期读取配置的模块会因 `$VAR` 缺失报错。
+- 测试默认写 `backend/.deer-flow`：宿主机跑测试一律 `DEER_FLOW_HOME=$(mktemp -d)`，否则在主目录里会污染线上数据。
 - 飞书卡片的构建涉及文件 IO：在主事件循环里要用 `asyncio.to_thread`；在 lark 回调线程里可以同步执行。
 
 ### 运维

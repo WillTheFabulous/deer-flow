@@ -24,12 +24,17 @@
 
 ### 日常操作
 
+下表里的 `$COMPOSE` 指：`cd docker && DEER_FLOW_ROOT=$(cd .. && pwd) docker compose -p deer-flow-dev -f docker-compose-dev.yaml -f docker-compose.cursor-agent.yaml`。
+
 | 操作 | 命令 |
 | --- | --- |
 | 改了 `config.yaml` / `.env` | `docker restart deer-flow-gateway` |
-| 新增 / 修改挂载 | `cd docker && DEER_FLOW_ROOT=$(cd .. && pwd) docker compose -p deer-flow-dev -f docker-compose-dev.yaml -f docker-compose.cursor-agent.yaml up -d --force-recreate gateway` |
+| 启动（不重建） | `$COMPOSE up -d --no-build redis frontend gateway nginx` |
+| 新增 / 修改挂载 | `$COMPOSE up -d --no-build --force-recreate gateway` |
 | 看日志 | `docker logs -f deer-flow-gateway`、`tail -f logs/gateway.log`、`make docker-logs` |
 | 停止 | `make docker-stop` |
+
+**不要用 `make docker-start`**：它每次都 `up --build`，会用原始 `uv.lock` 重建镜像（原因见下节）。
 
 ### 重建镜像（国内网络）
 
@@ -68,6 +73,7 @@ bash scripts/fork/rebuild-dev.sh --reset-venv
 | 变量 | 说明 |
 | --- | --- |
 | `BIND_HOST` | nginx 绑定地址。**局域网访问必须设 `0.0.0.0`**，默认只绑 `127.0.0.1` |
+| `DEER_FLOW_DEV_ALLOWED_ORIGINS` | Next.js dev 的来源白名单（逗号分隔的主机名 / IP），默认只有 `127.0.0.1,::1`。**局域网访问要加上宿主机的局域网 IP**（用 Tailscale 访问再加 Tailscale IP），否则 dev 资源和热更新会被拦 |
 | `PORT` | 入口端口，默认 2026 |
 | `DEER_FLOW_PROJECTS_DIR` / `DEER_FLOW_EXTRA_PROJECTS_DIR` | 项目根目录 bind 源，默认 `/work/projects`、`/prod_data` |
 | `DEER_FLOW_CURSOR_AGENT` | 设 `0` 关闭 cursor-agent 叠加 |
@@ -77,8 +83,9 @@ bash scripts/fork/rebuild-dev.sh --reset-venv
 
 - `config.yaml` **纳入版本管理**（上游 `.gitignore` 忽略它，fork 用 `git add -f` 追踪），只写 `$VAR` 引用；当前 `config_version: 50`。
 - fork 定制项：`models`（豆包 + 硅基流动）、`loop_detection`（阈值 + `tool_freq_overrides`）、`sandbox`（`allow_host_bash: true` + `mounts`）、`subagents`（6 个角色）、`run_events.backend: db`、`channels`（飞书启用、微信关闭、会话默认开 plan mode 与子代理）。
-- 同步上游后先 `make config-upgrade` 合并新字段，再复核上述定制项。
-- 本地跑全量测试前要临时移走根目录 `config.yaml`（上游 CI 没有它，部分测试在导入时就会读取配置）。
+- 同步上游后：对比新旧示例 `git diff <旧基线> upstream/main -- config.example.yaml`，把新增字段与 `config_version` 手工合入，再复核上述定制项。
+  **不要用 `make config-upgrade`**：它用 `yaml.dump` 写回，会删光全部注释；启用 `pii_redaction` 时还会把随机密钥写进被追踪的文件。
+- 本地跑测试：先 `export DEER_FLOW_HOME=$(mktemp -d)`（测试默认写 `backend/.deer-flow`，也就是线上数据目录）；全量测试要在根目录没有 `config.yaml` 的 checkout 里跑（上游 CI 没有它，部分测试在导入时就会读取配置）。
 
 ## 项目根目录与挂载
 
@@ -117,7 +124,7 @@ fork 没有新增 Gateway 路由。对外只有 nginx 入口（`/` 前端、`/ap
 - 仓库：`origin` = `WillTheFabulous/deer-flow`，`upstream` = `bytedance/deer-flow`。同步流程见 `.cursor/rules/Upstream-Sync-Protocol.mdc`，fork 补丁清单见 `feature-plans/upstream-sync-2026-09/README.md`。
 - **主目录切换必须和容器重建一起做**：线上 `gateway-venv` 卷里是旧依赖，直接切到新代码热重载会崩。
 - 切换步骤（飞书机器人会离线几分钟）：
-  1. 从 `.env` 删除 `UV_INDEX_URL`；在 `docker/.env` 写 `BIND_HOST=0.0.0.0`；
+  1. 从 `.env` 删除 `UV_INDEX_URL`；在 `docker/.env` 写 `BIND_HOST=0.0.0.0` 和 `DEER_FLOW_DEV_ALLOWED_ORIGINS=<局域网IP>,<Tailscale IP>`；
   2. `make docker-stop`；
   3. `git switch main`（主目录 `/work/deerflow/deer-flow`）；
   4. `bash scripts/fork/rebuild-dev.sh --reset-venv`；
