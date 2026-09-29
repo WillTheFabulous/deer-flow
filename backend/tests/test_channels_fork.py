@@ -346,6 +346,17 @@ class TestProgressHelpers:
         assert apply_custom_progress_event(steps, {"type": "task_timed_out", "task_id": "a"}) is None
         assert apply_custom_progress_event(steps, {"type": "other", "task_id": "a"}) is None
 
+    def test_live_usage_from_task_events_shows_in_status(self):
+        from app.channels.fork.progress import LiveRunRegistry
+
+        steps: dict = {}
+        apply_custom_progress_event(steps, {"type": "task_running", "task_id": "a", "description": "实现", "usage": {"total_tokens": 1200}})
+        apply_custom_progress_event(steps, {"type": "task_running", "task_id": "b", "description": "测试", "usage": {"total_tokens": 300}})
+        registry = LiveRunRegistry()
+        registry.start("t1")
+        registry.update("t1", todos=None, steps=steps)
+        assert "子任务累计 token：1500" in LiveRunRegistry.render(registry.get("t1"))
+
     def test_render_progress_block(self):
         block = render_progress_block(
             [{"content": "规划", "status": "completed"}, {"content": "实现", "status": "in_progress"}],

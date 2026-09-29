@@ -106,6 +106,12 @@ def apply_custom_progress_event(steps: dict[str, dict[str, str]], data: Any) -> 
     if activity:
         step["activity"] = activity[:_ACTIVITY_MAX_CHARS]
 
+    # task 工具在事件里附带该子任务的累计 usage（快照可直接覆盖），用于 /status 实时显示 token
+    usage = data.get("usage")
+    total_tokens = usage.get("total_tokens") if isinstance(usage, Mapping) else None
+    if isinstance(total_tokens, int) and total_tokens > 0:
+        step["tokens"] = str(total_tokens)
+
     if event_type in ("task_failed", "task_timed_out"):
         error_text = data.get("error")
         if isinstance(error_text, str) and error_text.strip():
@@ -117,7 +123,14 @@ def apply_custom_progress_event(steps: dict[str, dict[str, str]], data: Any) -> 
 
 
 def steps_for_metadata(steps: Mapping[str, Mapping[str, str]]) -> list[dict[str, str]]:
-    return [{"description": s.get("description", ""), "status": s.get("status", ""), "activity": s.get("activity", "")} for s in steps.values()]
+    return [{"description": s.get("description", ""), "status": s.get("status", ""), "activity": s.get("activity", ""), "tokens": s.get("tokens", "")} for s in steps.values()]
+
+
+def subtask_token_total(steps: Any) -> int:
+    """各子任务累计 token 之和（步骤里的 tokens 为 task 事件带来的累计快照）。"""
+    if not isinstance(steps, list):
+        return 0
+    return sum(int(s["tokens"]) for s in steps if isinstance(s, Mapping) and str(s.get("tokens", "")).isdigit())
 
 
 def render_progress_block(todos: Any, steps: Any) -> str:
@@ -204,6 +217,9 @@ class LiveRunRegistry:
         running = snapshot.get("status") == "running"
         lines = ["**🟢 正在执行中**" if running else "**✅ 本轮已完成**"]
         lines.append(f"已运行 {format_duration(now - (snapshot.get('started_at') or now))}，最近更新 {format_duration(now - (snapshot.get('updated_at') or now))}前")
+        subtask_tokens = subtask_token_total(snapshot.get("steps"))
+        if subtask_tokens:
+            lines.append(f"子任务累计 token：{subtask_tokens}")
         block = render_progress_block(snapshot.get("todos"), snapshot.get("steps"))
         if block:
             lines.extend(["", block])
