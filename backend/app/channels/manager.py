@@ -1197,6 +1197,22 @@ async def _ingest_inbound_files(thread_id: str, msg: InboundMessage, *, user_id:
     return created
 
 
+class _NullStreamObserver:
+    """Fork：流观察者的空实现（见 ``ChannelManager._make_stream_observer``）。"""
+
+    def stream_modes(self, modes: list[str]) -> list[str]:
+        return modes
+
+    async def on_event(self, event: str, data: Any) -> bool:
+        return False
+
+    def outbound_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        return metadata
+
+    def finish(self, result: Any) -> None:
+        return None
+
+
 class ChannelManager:
     """Core dispatcher that bridges IM channels to the DeerFlow agent.
 
@@ -1609,6 +1625,14 @@ class ChannelManager:
             return
 
         self._maybe_spawn_followup_watcher(thread_id, result, carrier_msg)
+
+    def _make_stream_observer(self, msg: InboundMessage, thread_id: str) -> Any:
+        """Fork 扩展点：为一次流式 run 返回进度观察者（默认空实现，行为与上游一致）。
+
+        观察者需提供 ``stream_modes(modes)``、``await on_event(event, data) -> bool``、
+        ``outbound_metadata(metadata)`` 与 ``finish(result)``，见 app/channels/fork/progress.py。
+        """
+        return _NullStreamObserver()
 
     async def _publish_progress_update(self, msg: InboundMessage, thread_id: str, text: str) -> None:
         await self.bus.publish_outbound(
@@ -2617,11 +2641,12 @@ class ChannelManager:
         last_published_len = 0
         last_publish_at = 0.0
         stream_error: BaseException | None = None
+        observer = self._make_stream_observer(msg, thread_id)
         stream_kwargs: dict[str, Any] = {
             "input": {"messages": [human_message]},
             "config": run_config,
             "context": run_context,
-            "stream_mode": list(STREAM_MODES),
+            "stream_mode": observer.stream_modes(list(STREAM_MODES)),
             "multitask_strategy": "reject",
         }
         if owner_headers := _owner_headers(msg):
@@ -2649,7 +2674,9 @@ class ChannelManager:
                         if clarification_text and clarification_text != latest_text:
                             latest_text = clarification_text
 
-                if not latest_text or latest_text == last_published_text:
+                # Fork：进度（todos / 子任务）有变化时，即便文本未变也要推送
+                progress_changed = await observer.on_event(event, data)
+                if (not latest_text or latest_text == last_published_text) and not progress_changed:
                     continue
 
                 now = time.monotonic()
@@ -2670,7 +2697,7 @@ class ChannelManager:
                         thread_ts=msg.thread_ts,
                         connection_id=msg.connection_id,
                         owner_user_id=msg.owner_user_id,
-                        metadata=_response_metadata(msg.metadata),
+                        metadata=observer.outbound_metadata(_response_metadata(msg.metadata)),
                     )
                 )
                 last_published_text = latest_text
@@ -2722,9 +2749,10 @@ class ChannelManager:
                     thread_ts=msg.thread_ts,
                     connection_id=msg.connection_id,
                     owner_user_id=msg.owner_user_id,
-                    metadata=_response_metadata(msg.metadata, pending_clarification=pending_clarification),
+                    metadata=observer.outbound_metadata(_response_metadata(msg.metadata, pending_clarification=pending_clarification)),
                 )
             )
+            observer.finish(result)
             if stream_error is not None:
                 # This path swallows its own errors, so _handle_message's generic
                 # handler never runs and never releases the key. Release only

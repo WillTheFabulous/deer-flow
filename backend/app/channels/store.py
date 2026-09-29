@@ -10,10 +10,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app.channels.fork.store_ext import ChannelStoreExtensionsMixin
+
 logger = logging.getLogger(__name__)
 
 
-class ChannelStore:
+class ChannelStore(ChannelStoreExtensionsMixin):
     """JSON-file-backed store that maps IM conversations to DeerFlow threads.
 
     Data layout (on disk)::
@@ -83,7 +85,8 @@ class ChannelStore:
         """Look up the DeerFlow thread_id for a given IM conversation/topic."""
         with self._lock:
             entry = self._data.get(self._key(channel_name, chat_id, topic_id))
-            return entry["thread_id"] if entry else None
+            # Fork：条目可能由 /repo 等先行创建而尚无 thread_id，必须用 get 安全读取
+            return entry.get("thread_id") if entry else None
 
     def set_thread_id(
         self,
@@ -98,13 +101,17 @@ class ChannelStore:
         with self._lock:
             key = self._key(channel_name, chat_id, topic_id)
             now = time.time()
-            existing = self._data.get(key)
-            self._data[key] = {
-                "thread_id": thread_id,
-                "user_id": user_id,
-                "created_at": existing["created_at"] if existing else now,
-                "updated_at": now,
-            }
+            # Fork：合并写而非整体重写，新建线程时保留 workdir / sessions 等扩展字段（见 fork/store_ext.py）
+            entry = dict(self._data.get(key) or {})
+            entry.update(
+                {
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "created_at": entry.get("created_at", now),
+                    "updated_at": now,
+                }
+            )
+            self._data[key] = entry
             self._save()
 
     def remove(self, channel_name: str, chat_id: str, topic_id: str | None = None) -> bool:

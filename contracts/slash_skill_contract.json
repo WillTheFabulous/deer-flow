@@ -8,8 +8,11 @@
     "goal",
     "help",
     "memory",
+    "model",
     "models",
     "new",
+    "repo",
+    "sessions",
     "status"
   ],
   "skill_name_pattern": "^/([a-z0-9]+(?:-[a-z0-9]+)*)(?:\\s+|$)"

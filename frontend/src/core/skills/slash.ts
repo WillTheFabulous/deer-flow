@@ -16,8 +16,12 @@ export const RESERVED_SLASH_SKILL_NAMES = new Set([
   "goal",
   "help",
   "memory",
+  // Fork 渠道命令（后端见 app/channels/fork/manager.py）
+  "model",
   "models",
   "new",
+  "repo",
+  "sessions",
   "status",
 ]);
 

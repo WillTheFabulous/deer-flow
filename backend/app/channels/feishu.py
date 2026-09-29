@@ -145,7 +145,8 @@ class FeishuChannel(Channel):
             return False
         return self._thread is not None and self._thread.is_alive()
 
-    def _build_event_handler(self, lark):
+    def _event_handler_builder(self, lark):
+        # Fork：拆出 builder，子类（fork/feishu.py）在其上追加卡片回调与菜单事件注册
         return (
             lark.EventDispatcherHandler.builder("", "")
             .register_p2_im_message_receive_v1(self._on_message)
@@ -153,8 +154,10 @@ class FeishuChannel(Channel):
             .register_p2_im_message_reaction_created_v1(self._on_ignored_message_event)
             .register_p2_im_message_reaction_deleted_v1(self._on_ignored_message_event)
             .register_p2_im_message_recalled_v1(self._on_ignored_message_event)
-            .build()
         )
+
+    def _build_event_handler(self, lark):
+        return self._event_handler_builder(lark).build()
 
     async def start(self) -> None:
         if self._running:

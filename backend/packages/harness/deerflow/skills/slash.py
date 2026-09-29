@@ -14,7 +14,8 @@ from deerflow.skills.types import Skill
 #: (``tests/test_slash_skill_contract.py`` here, ``slash-contract.test.ts`` on
 #: the frontend), so a reserved command or grammar change in only one language
 #: fails CI.
-RESERVED_SLASH_SKILL_NAMES = frozenset({"agent", "bootstrap", "context", "goal", "help", "memory", "models", "new", "status"})
+# Fork：model / repo / sessions 为 fork 的渠道命令（见 app/channels/fork/manager.py），需同步 contracts 与前端
+RESERVED_SLASH_SKILL_NAMES = frozenset({"agent", "bootstrap", "context", "goal", "help", "memory", "model", "models", "new", "repo", "sessions", "status"})
 _SLASH_SKILL_RE = re.compile(r"^/([a-z0-9]+(?:-[a-z0-9]+)*)(?:\s+|$)")
 _CONTEXT_COMPACT_ARGUMENT = "compact"
 

@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app.channels.base import Channel
-from app.channels.manager import DEFAULT_CHANNEL_MAX_CONCURRENCY, DEFAULT_CHANNEL_SHUTDOWN_GRACE_PERIOD_SECONDS, DEFAULT_GATEWAY_URL, DEFAULT_LANGGRAPH_URL, ChannelManager
+from app.channels.fork.manager import ForkChannelManager
+from app.channels.manager import DEFAULT_CHANNEL_MAX_CONCURRENCY, DEFAULT_CHANNEL_SHUTDOWN_GRACE_PERIOD_SECONDS, DEFAULT_GATEWAY_URL, DEFAULT_LANGGRAPH_URL
 from app.channels.message_bus import DEFAULT_INBOUND_QUEUE_MAXSIZE, MessageBus
 from app.channels.runtime_config_store import merge_runtime_channel_configs
 from app.channels.store import ChannelStore
@@ -29,7 +30,8 @@ _CHANNEL_REGISTRY: dict[str, str] = {
     "buzz": "app.channels.buzz:BuzzChannel",
     "dingtalk": "app.channels.dingtalk:DingTalkChannel",
     "discord": "app.channels.discord:DiscordChannel",
-    "feishu": "app.channels.feishu:FeishuChannel",
+    # Fork：飞书交互卡片 / 机器人菜单 / 进度块见 app/channels/fork/feishu.py
+    "feishu": "app.channels.fork.feishu:ForkFeishuChannel",
     "github": "app.channels.github:GitHubChannel",
     "slack": "app.channels.slack:SlackChannel",
     "telegram": "app.channels.telegram:TelegramChannel",
@@ -141,7 +143,8 @@ class ChannelService:
         channel_sessions = {name: channel_config.get("session") for name, channel_config in config.items() if isinstance(channel_config, dict)}
         from app.channels.dedupe_store import make_inbound_dedupe_store
 
-        self.manager = ChannelManager(
+        # Fork：会话级功能（/repo、/sessions、/model、流式进度）见 app/channels/fork/manager.py
+        self.manager = ForkChannelManager(
             bus=self.bus,
             store=self.store,
             max_concurrency=max_concurrency,

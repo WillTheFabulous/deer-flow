@@ -18,6 +18,10 @@ KNOWN_CHANNEL_COMMANDS: frozenset[str] = frozenset(
         "/models",
         "/memory",
         "/help",
+        # Fork 命令（处理逻辑见 app/channels/fork/manager.py）
+        "/model",
+        "/repo",
+        "/sessions",
     }
 )
 

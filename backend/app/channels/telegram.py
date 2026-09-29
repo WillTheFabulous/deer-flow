@@ -153,6 +153,9 @@ class TelegramChannel(Channel):
         app.add_handler(CommandHandler("agent", self._cmd_generic))
         app.add_handler(CommandHandler("goal", self._cmd_generic))
         app.add_handler(CommandHandler("help", self._cmd_generic))
+        # Fork 命令（处理逻辑见 app/channels/fork/manager.py）
+        for fork_command in ("model", "repo", "sessions"):
+            app.add_handler(CommandHandler(fork_command, self._cmd_generic))
 
         # Slash skill commands are dynamic and cannot all be pre-registered
         # with Telegram, so route unknown slash commands through chat handling.
