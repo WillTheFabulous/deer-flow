@@ -3,7 +3,7 @@
 
 ## 当前焦点
 
-1. **上游同步重建待收尾**：`sync/upstream-2026-09` 已完成移植与验证；等用户确认后把 `main` 重置为该分支并 force-with-lease 推送。主工作目录仍在 `legacy/fork-2026-06`（线上容器在跑旧代码），切换与容器重建单独执行。见 `feature-plans/upstream-sync-2026-09/progress.md`。
+1. **上游同步重建待切换**：新版已推到 origin `main`（`3759de00`）。主工作目录仍在 `legacy/fork-2026-06`（线上容器在跑旧代码），主目录切换与容器重建需一起执行。见 `feature-plans/upstream-sync-2026-09/progress.md`。
 2. **Cursor Rules / Memory Bank 多人模式已初始化**：`.cursor/rules` 7 条、`memory-bank-merge` skill、OWNERS / CODEOWNERS / CI / pre-commit。建议以后单独打开 `/work/deerflow/deer-flow` 作为 workspace，避免和 mooya 的常驻规则同时生效。
 
 ## 最近完成
@@ -26,7 +26,7 @@
 
 ## 下一步 / 阻塞项
 
-- 用户确认后 force-push `main`，再按 feature progress 切换主目录、重建 dev 容器。
+- 按 feature progress 切换主目录到 `main` 并用 `scripts/fork/rebuild-dev.sh --reset-venv` 重建 dev 容器。
 - 切换前从 `.env` 删除 `UV_INDEX_URL`；构建镜像按 `DEPLOYMENT.md` 临时改写 `uv.lock` 走阿里云镜像。
 - 局域网访问 Web 需在 `docker/.env` 写 `BIND_HOST=0.0.0.0`。
 - 容器重建后跑飞书手测清单（见 feature progress）。
