@@ -1,0 +1,14 @@
+# CODEOWNERS — fork 关键路径强制 review 归属
+# 需在 GitHub 仓库 Settings → Branches → Branch protection 里
+# 勾选「Require review from Code Owners」后才生效。
+
+# Memory Bank canonical：只有负责人可改（普通开发者只能写 memory-bank/personal/*）
+/memory-bank/*.md          @WillTheFabulous
+/memory-bank/archive/      @WillTheFabulous
+/memory-bank/OWNERS        @WillTheFabulous
+
+# AI 协作规则 / skill
+/.cursor/rules/            @WillTheFabulous
+/.cursor/skills/           @WillTheFabulous
+
+# 个人分片 memory-bank/personal/* 不设 owner：人人可改自己的那份，无需 review。

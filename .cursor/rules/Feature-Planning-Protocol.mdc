@@ -1,0 +1,15 @@
+---
+description: 新功能 / 大版本改造的计划文档约定
+alwaysApply: true
+---
+
+- 新功能 / 大版本改造计划统一存放在 `feature-plans/` 目录。
+- 每个 feature 计划必须使用独立子目录，至少包含：
+  1. `README.md` — feature 总览、目标、范围、关键决策
+  2. `progress.md` — 当前阶段、已完成事项、下一步、阻塞项
+- 当任务涉及某个新功能或大版本改造时，在读取 `memory-bank/activeContext.md` 与 `memory-bank/systemPatterns.md` 后，还必须继续阅读对应 feature 目录下的：
+  1. `README.md`
+  2. `progress.md`
+- 当前活跃 feature 的目录路径应在 `memory-bank/activeContext.md` 中明确记录，便于后续会话快速定位。
+- 当某个 feature 的架构、阶段、范围或关键决策发生变化时，必须同步更新该 feature 目录下的 `README.md`。
+- 当某个 feature 的实施进度、已完成事项、下一步或阻塞项发生变化时，必须同步更新该 feature 目录下的 `progress.md`。

@@ -1,0 +1,24 @@
+---
+description: 开发环境、Docker 操作边界与目录约定
+alwaysApply: true
+---
+
+## 🐳 Docker 规则
+
+- **默认只操作开发栈**：`docker/docker-compose-dev.yaml`（项目名 `deer-flow-dev`，容器 `deer-flow-gateway` / `deer-flow-frontend` / `deer-flow-nginx` / `deer-flow-redis`）。除非用户明确说「生产环境」，否则不碰 `docker/docker-compose.yaml` / `make up`。
+- 启动 / 重建用 `make docker-start`（镜像加速与 `BIND_HOST` 等参数见 `DEPLOYMENT.md`）；它会自动叠加 `docker/docker-compose.cursor-agent.yaml`。
+- **backend 热重载直通线上**：`backend/` 挂载进 gateway 且开着 `uvicorn --reload`，改动 `.py` 会立刻作用于正在服务飞书的机器人。大改或与依赖版本相关的改动在 worktree 里做，不要在主工作目录切换到依赖不匹配的代码。
+- `config.yaml` / `.env` 不在 reload 监听范围：改完执行 `docker restart deer-flow-gateway`；新增挂载必须 `docker compose ... up -d --force-recreate gateway`。
+
+## 📁 目录
+
+- 主工作目录 `/work/deerflow/deer-flow`（dev 容器挂载的就是它）；上游同步在 worktree（如 `/work/deerflow/deer-flow-sync`）进行，见 `Upstream-Sync-Protocol`。
+- 上游权威文档：根目录 `AGENTS.md` / `CLAUDE.md`、`backend/CLAUDE.md`、`backend/app/channels/AGENTS.md`、`frontend/AGENTS.md`。
+- fork 自有代码：`backend/app/channels/fork/`、`docker/docker-compose.cursor-agent.yaml`、`docker/cursor-agent-setup.sh`；完整补丁清单见 `feature-plans/upstream-sync-2026-09/README.md`。
+- `config.yaml` 纳入版本管理，只写 `$VAR` 引用；真实密钥只放 gitignored 的 `.env`。
+
+## 🖥️ Environment
+
+- Host：阿里云 ECS（Linux，局域网访问）。装有 Tailscale，阿里内网网段 `100.100.0.0/16` 由 `tailscale-aliyun-allow.timer` 放行，否则宿主机 DNS 全部失效。
+- 宿主机直连 PyPI（files.pythonhosted.org）基本不可用：本地装依赖、构建镜像都要走阿里云镜像，做法见 `DEPLOYMENT.md`。
+- 宿主机上跑测试 / lint 直接用 `backend/.venv/bin/...`，不要用 `uv run`（会触发慢速同步）。

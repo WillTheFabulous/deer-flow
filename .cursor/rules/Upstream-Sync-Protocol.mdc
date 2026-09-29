@@ -1,0 +1,18 @@
+---
+description: fork 与上游 bytedance/deer-flow 的同步与补丁隔离约定
+alwaysApply: true
+---
+
+- 仓库关系：`origin` = `WillTheFabulous/deer-flow`（fork），`upstream` = `bytedance/deer-flow`。
+- **补丁隔离**：fork 功能优先放 fork 专属位置（`backend/app/channels/fork/`、`docker/*cursor-agent*`、独立的 fork 测试文件）；上游文件只加最小挂接点，并用中文「Fork」注释标出。
+- **补丁登记**：新增、修改或删除任何 fork 补丁，都要同步更新 `feature-plans/upstream-sync-2026-09/README.md` 的「fork 补丁清单」，上游文件里的挂接点必须逐条登记。
+- **不改上游测试迁就 fork**：上游不变式（如 `KNOWN_CHANNEL_COMMANDS` ⊆ Telegram 注册命令 ⊆ 保留 slash 名、`contracts/` 跨语言契约）要在实现侧满足；fork 行为写进 fork 自己的测试。
+- **同步流程固定**：
+  1. 打备份 tag 并推到 origin；
+  2. `git fetch upstream`；
+  3. 在 worktree 以 `upstream/main` 为基线重建（或 rebase fork 提交），逐项移植并各自提交；
+  4. worktree 内跑 lint + 全量单测（临时移走根目录 `config.yaml`，与上游 CI 条件一致）；
+  5. 用户确认后再 `git push --force-with-lease origin main`；
+  6. 主工作目录切换分支与容器重建单独执行（热重载会让飞书机器人立刻跑新代码）。
+- **网络兜底**：宿主机 DNS 异常时，先查 `systemctl status tailscale-aliyun-allow.timer`；临时绕过可用 `git -c http.curloptResolve=github.com:443:<IP> fetch upstream`。
+- 同步后先跑 `make config-upgrade` 合并新配置字段，再复核 `config.yaml` 里的 fork 定制项。
