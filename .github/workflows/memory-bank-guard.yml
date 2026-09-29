@@ -1,0 +1,45 @@
+# Fork：Memory Bank 门禁（见 .cursor/rules/Memory-Bank-Protocol.mdc）
+# - owner-check：非负责人 PR 不得修改 canonical memory-bank
+# - secret-scan：memory-bank / feature-plans / DEPLOYMENT.md 不得出现明文密钥
+name: Memory Bank Guard
+
+on:
+  pull_request:
+    paths:
+      - "memory-bank/**"
+      - "feature-plans/**"
+      - "DEPLOYMENT.md"
+  push:
+    branches: [main]
+    paths:
+      - "memory-bank/**"
+      - "feature-plans/**"
+      - "DEPLOYMENT.md"
+
+permissions:
+  contents: read
+
+jobs:
+  owner-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 校验 canonical memory-bank 只有负责人可改
+        run: bash scripts/ci/check_memory_bank_owner.sh
+        env:
+          PR_ACTOR: ${{ github.actor }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: gitleaks（只扫运维笔记类文档）
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz" | tar -xz gitleaks
+          mkdir -p /tmp/scan && cp -r memory-bank feature-plans DEPLOYMENT.md /tmp/scan/
+          ./gitleaks detect --source /tmp/scan --no-git --redact --no-banner

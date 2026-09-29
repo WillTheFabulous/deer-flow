@@ -1,0 +1,142 @@
+---
+description: Memory Bank 读写协议（多人分片 + 负责人归并）
+alwaysApply: true
+---
+
+You must strictly maintain a "Memory Bank" in the memory-bank/ directory. This is your long-term memory system, ensuring continuity across sessions and preventing the loss of critical project context.
+
+## 0. 会话开始：强制读取（所有人一致）
+
+> ⚠️ **强制读取规则**：每次进入 **plan / debug / agent** 模式开始工作前，必须先完整读取 memory-bank/ 根目录下的全部 canonical 核心文件，不得跳过。
+
+**必须按顺序读取**以下 canonical 文件来同步项目状态：
+
+1. **`memory-bank/activeContext.md`** — 当前工作焦点 & 最近决策
+2. **`memory-bank/systemPatterns.md`** — 技术架构、fork 挂接点、渠道 / 子代理模式（改后端逻辑前必读）
+3. **`memory-bank/progress.md`** — 路线图、里程碑、待办与已知问题
+4. **`memory-bank/techContext.md`** — 基础设施约束（Docker / 网络与镜像 / 端口 / 外部服务 / 宿主机）
+5. **`memory-bank/productContext.md`** — 业务目标与用户工作流（飞书指挥 Cursor 远程编程等）
+
+> `memory-bank/archive/` 是历史归档（一次性快照），**不属于必读清单**，仅在追溯被压缩条目时按需查阅。
+> `memory-bank/personal/` 是个人分片目录，按需查阅（了解他人未归并的增量），不属于必读清单。
+
+## 1. 写入分流：canonical vs 个人分片（多人协作核心规则）
+
+Memory Bank 采用「**个人分片 + 负责人归并**」模型，从机制上消除多人合并冲突：
+
+- **canonical（唯一 source of truth）**：memory-bank/ 根目录下的核心 .md（activeContext / systemPatterns / progress / techContext / productContext / projectBrief）+ `archive/`。所有人会话开始 READ。
+- **个人分片**：`memory-bank/personal/<user>.md`，一人一份、append-only 增量日志。文件唯一，跨分支永不冲突。
+
+**判定当前账号身份**（写入前必做）：读取 `git config user.email`：
+- 邮箱出现在 `memory-bank/OWNERS`（第 2 列）→ **负责人**。
+- 否则 → **普通开发者**（默认）。
+
+**普通开发者（默认行为）**：
+- **禁止**修改任何 canonical 文件与 `archive/`（CODEOWNERS + CI 会拦截，本地 pre-commit 提前拦截）。
+- 会话 / 任务结束时（见 §4），把本次对项目认知的增量写进自己的分片 `memory-bank/personal/<user-slug>.md`：
+  - `<user-slug>` = `git config user.email` 的 @ 前部分（非法字符替换为 `-`），例如 `alice@x.com` → `alice`。
+  - **新增内容 → 直接写**；对已有 canonical 的**改动 → 写成 delta**（把 X 改为 Y + 原因）+ 标注目标 canonical 文件·章节，便于归并归位。
+  - 分片不存在则复制 `memory-bank/personal/_TEMPLATE.md` 新建。
+  - 分片保持精简（**超 30K 字符**才整理，压到 **18K 字符**以下），过长先自行合并同类项。
+
+**负责人**：
+- 可直接维护 canonical，或（推荐）用 `memory-bank-merge` skill 把各分片归并进 canonical。
+- **归并是唯一把分片内容写入 canonical 的合法路径**；归并时遵循 §2 更新矩阵与 §3 压缩规则。
+
+## 2. canonical 精准更新矩阵（负责人写入 / 归并时遵循）
+
+每个 canonical 文件有明确的写入边界。**只更新受影响的文件，不要交叉写入。**
+
+| 文件 | 写入内容 | 触发更新的场景 | ⛔ 不该写入的内容 |
+| --- | --- | --- | --- |
+| **activeContext.md** | 当前工作焦点、最近技术决策、即时下一步、活跃 feature 目录列表 | ① 开始新任务 ② 做出架构 / 业务决策 ③ 任务完成时冻结状态并更新焦点 | 已完成任务的详细描述（→ progress.md）；技术细节（→ systemPatterns.md） |
+| **systemPatterns.md** | 技术架构、fork 挂接点、渠道 / 子代理 / 配置模式、模块边界与关键函数契约、经验教训 | ① 新增或修改 fork 挂接点 / 公共函数签名 ② 发现可复用模式 ③ 新增 Gateway 端点或渠道命令 ④ 持久化结构变化（store 字段、config 字段） ⑤ 架构调整 | 进度状态（→ progress.md）；业务流程（→ productContext.md）；基础设施配置（→ techContext.md） |
+| **progress.md** | 路线图、已完成里程碑、待办（TODO）、已知 bug / 遗留问题 | ① 里程碑完成 ② 新增待办 ③ 发现 bug ④ 从 activeContext 移入已完成任务 | 技术实现细节（→ systemPatterns.md）；基础设施变更（→ techContext.md） |
+| **techContext.md** | 宿主机与网络、Docker 部署拓扑、端口、镜像源、外部服务（火山方舟 / 硅基流动 / 飞书 / Cursor CLI / 代理）、环境变量清单 | ① 宿主机或网络变更 ② Docker 拓扑调整 ③ 新增外部服务 ④ 环境变量变化 | 函数签名（→ systemPatterns.md）；业务逻辑（→ productContext.md） |
+| **productContext.md** | 业务目标、用户工作流、渠道交互（命令 / 卡片 / 菜单）、UX 决策 | ① 新增用户可见功能 ② 工作流变化 ③ UX 决策 | 技术实现（→ systemPatterns.md）；基础设施（→ techContext.md） |
+| **projectBrief.md** | 项目核心目标（What & Why）、范围 | 仅在方向 / 范围重大调整时更新 | 一切实现细节 |
+
+## 3. 预算双水位与结构规则（写 canonical 时执行——即归并时由负责人执行）
+
+> 个人分片本身**不需要**执行下列压缩，只需保持精简；下列规则在把内容写入 canonical 时强制执行。
+
+### 3.0 双水位预算总表
+
+- **触发线（高水位）**：只有**超过**它才需要压缩。**未超 → 直接追加，不做任何压缩动作**。
+- **目标线（低水位）**：一旦开始压缩，**必须压到目标线以下**才算压完。
+- **口径只用字符，一律 `wc -m`**（`wc -c` 数字节，中文会虚高近 2 倍）。不设行数指标。
+
+| 文件 | 触发线（超过才压） | 目标线（压到这条线下） |
+| --- | --- | --- |
+| `activeContext.md` | **32K 字符** | **18K 字符** |
+| `systemPatterns.md` | **220K 字符** | **185K 字符** |
+| `progress.md` | **500K 字符** | **380K 字符**（把最老里程碑整段移入 `archive/`） |
+| `techContext.md` | **60K 字符** | **40K 字符** |
+| `productContext.md` | **30K 字符** | **20K 字符** |
+| `projectBrief.md` | 不设（恒 < 1K） | — |
+| `personal/<user>.md` | **30K 字符** | **18K 字符** |
+
+**水位线注释**：每次**压缩后**在文件顶部写一行 `<!-- Budget: 17.2K / 32K chars · compacted YYYY-MM-DD -->`。日常写入时读到这行，若「记录值 + 本次预估增量」明显低于触发线 → 直接写，不必跑 `wc -m`。水位线只在压缩后更新。
+
+**一条命令自检**：`bash scripts/memory_bank_budget.sh` 输出各文件实测字符数 / 触发线 / `OK|COMPACT`。
+
+### 3.1 activeContext.md 章节配额与压缩流程
+
+**固定结构（章节顺序不得更改、不得新增重复的焦点段）+ 每节硬配额**：
+
+1. `## 当前焦点` — **≤ 3 项**，每项 **≤ 1.5K 字符**，只放「正在进行 / 已完成但待验证」的任务（含关键文件指针 + 明确的下一步）
+2. `## 最近完成` — 滚动窗口 **14 天内且 ≤ 8 条**，每条 **≤ 300 字符**，细节指向 progress.md 同名条目
+3. `## 最近技术决策` — **≤ 10 条**，每条 **≤ 500 字符**，只放仍然约束后续工作的活跃决策
+4. `## 活跃 Feature 目录` — feature-plans 子目录列表，每条 1 行
+5. `## 下一步 / 阻塞项` — **≤ 12 条 / 全节 ≤ 6K 字符，每条 ≤ 250 字符**（一句话 + 指向 `feature-plans/*/progress.md` 的链接）
+
+**压缩流程（仅在超过触发线、或某节突破配额时执行）**：
+
+- ① 焦点已满 3 项时，把最旧 / 已验证完毕的焦点项压成 ≤ 300 字符摘要降级到「最近完成」顶部；
+- ② 降级前**必须确认 progress.md 已有该任务的里程碑条目**（没有就先补一条）；
+- ③ 「最近完成」超 8 条或超 14 天 → 直接删除（详情已在 progress.md）；
+- ④ 「最近技术决策」中已被 systemPatterns / techContext 固化、或不再约束工作的条目 → 删除；
+- ⑤ 「下一步 / 阻塞项」超 12 条、或某条超 14 天未动 → 外迁：属某 feature 的清单迁入 `feature-plans/<feature>/progress.md`，无 feature 归属的运维项迁入 `memory-bank/progress.md` 的 `## 待办 TODO`；
+- ⑥ 压缩后实测 `wc -m` 确认低于**目标线**，并更新顶部水位线注释。
+
+⛔ 禁止：在文件尾部追加按日期命名的历史段（如 `## 当前状态（日期）`）；历史一律进 progress.md。
+
+### 3.2 systemPatterns.md 结构与简练规则
+
+只记录**当前状态**的架构 / 模式 / 契约。**固定章节顺序**（新内容必须归入对应章节）：
+
+1. 技术架构与运行拓扑 → 2. 目录结构与 fork 挂接点 → 3. IM 渠道模式（飞书 / 命令 / 卡片 / 会话） → 4. 子代理与角色流水线 → 5. 模型与配置约定 → 6. Cursor CLI 驱动模式 → 7. 上游同步模式 → 8. 经验教训速查（后端 / 运维）
+
+**写入纪律**：
+
+- 条目只写**当前行为契约**（函数签名 / 数据格式 / 不变量 / 调用方），**不写演化史**；
+- 模式被替代时**直接改写或删除旧描述**，不保留「历史方案」段落；
+- 踩坑教训以 **1-3 条短规则**写入「经验教训速查」，每条 ≤ 300 字符，案例细节放 progress.md；
+- 同一主题只保留一个小节，增量合并进该小节而非另起新段。
+
+### 3.3 progress.md 新条目长度约定
+
+- 新增里程碑条目 **≤ 1.5K 字符**：做了什么 / 关键文件 / 验证方式 / 部署要点 / 经验各 1-2 句；
+- 详细过程（多轮调试、逐文件说明）归 `feature-plans/*/progress.md` 与 git commit message。
+
+## 4. Termination Checklist（任务完成前必须逐项检查——按身份分流）
+
+### 4.A 普通开发者（默认）
+
+- [ ] 已把本次增量写进 `memory-bank/personal/<self>.md`？（新增直接写 / canonical 改动写 delta + 标目标文件·章节）
+- [ ] **未触碰**任何 canonical 文件与 `archive/`？
+- [ ] 分片是否超过 30K 字符需要合并同类项到 18K 以下？
+- [ ] DEPLOYMENT.md / feature-plans/* 等**非 canonical** 文档，若本次改动触发其联动规则，仍照常更新。
+
+### 4.B 负责人（直接维护 canonical 或归并后）
+
+- [ ] **activeContext.md** — 焦点和下一步已更新？各节守住 §3.1 配额？
+- [ ] **预算检查**（先看水位线注释，逼近触发线时才跑 `bash scripts/memory_bank_budget.sh`）；**只有超过触发线才压缩，且必须压到目标线以下**。
+- [ ] **progress.md** — 里程碑（≤ 1.5K 字符）/ 新增待办？
+- [ ] **systemPatterns.md** — 新增挂接点 / 模式 / 契约是否归入 §3.2 固定章节、只写当前契约？
+- [ ] **techContext.md** — 宿主机 / Docker / 外部服务 / 环境变量变更？
+- [ ] **DEPLOYMENT.md** — 是否触发 DEPLOYMENT 联动矩阵中的任意场景？
+- [ ] **feature-plans/\*/progress.md** — 涉及的活跃 feature 进度是否已更新？
+- [ ] 若执行了归并：是否已在各分片「已归并」区打上水位线（merged up to …）？
+
+> 只更新确实受影响的文件，只改受影响的章节，同时更新文件顶部的 `[Last Updated: YYYY-MM-DD]`。

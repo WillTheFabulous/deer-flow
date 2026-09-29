@@ -1,0 +1,14 @@
+---
+description: 改 backend / frontend 前先读上游模块文档
+globs: backend/**,frontend/**
+alwaysApply: false
+---
+
+- 改 `backend/` 前先读 `backend/CLAUDE.md` 对应章节；改 IM 渠道（`backend/app/channels/**`）先读 `backend/app/channels/AGENTS.md`；改 harness 子模块（如 `runtime/`、`agents/memory/`）先读该目录下的 `AGENTS.md`。
+- 改 `frontend/` 前先读 `frontend/AGENTS.md` 与 `frontend/CLAUDE.md`。
+- 遵守上游硬约束：阻塞 IO 不进事件循环（用 `asyncio.to_thread`）；SDK 线程回调提交协程用 `_submit_threadsafe_coroutine()`；`ChannelStore._data` 的每次访问都持 `_lock`。
+- fork 渠道功能改 `backend/app/channels/fork/`，并补 `backend/tests/test_channels_fork.py`；子代理 thinking 开关的测试在 `backend/tests/test_subagent_thinking_config.py`。
+- 宿主机验证命令（在 `backend/` 下）：
+  - lint：`.venv/bin/ruff check . && .venv/bin/ruff format --check .`
+  - 单测：`PYTHONPATH=. .venv/bin/python -m pytest tests/<file> -q`
+  - 全量：先临时移走根目录 `config.yaml`，再 `PYTHONPATH=. .venv/bin/python -m pytest -m "not live" --ignore=tests/blocking_io tests/ -q`

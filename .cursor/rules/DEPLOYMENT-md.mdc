@@ -1,0 +1,19 @@
+---
+description: DEPLOYMENT.md 联动更新矩阵
+alwaysApply: true
+---
+
+`DEPLOYMENT.md` 是这个 fork 面向部署运维的核心文档。以下类型的改动发生时，**必须同步更新** `DEPLOYMENT.md` 中对应章节：
+
+| 触发场景 | 需更新的 DEPLOYMENT.md 章节 |
+| ----- | --- |
+| 修改 `docker/*.yaml`、`backend/Dockerfile`、`docker/nginx/`、`docker/dev-entrypoint.sh`、`docker/cursor-agent-setup.sh`、`scripts/docker.sh` | **部署拓扑** / **启动与重建** |
+| 新增 / 修改环境变量（`.env`、`.env.example`、`docker/.env`、compose 插值变量） | **环境变量** |
+| `config.yaml` 结构变化、同步上游后 `config_version` 变化、新增定制项 | **配置文件** |
+| 修改 `sandbox.mounts` 或项目根目录的 bind | **项目根目录与挂载** |
+| 新增 / 修改 IM 渠道命令、飞书卡片 / 机器人菜单事件、事件订阅要求 | **飞书渠道运维** |
+| 新增 / 修改 `subagents.custom_agents` 角色或 Custom Agent 人设 | **角色与人设** |
+| 新增 / 修改 Gateway 路由或对外端点（`backend/app/gateway/routers/`） | **对外端点** |
+| 上游同步流程、分支切换、容器重建步骤变化 | **上游同步与切换** |
+| 宿主机网络 / DNS / 代理 / 镜像源变化 | **宿主机与网络** |
+| 安全策略变更（认证、`BIND_HOST`、`allow_host_bash`、代理、权限） | **安全清单** |

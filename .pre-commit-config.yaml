@@ -31,3 +31,13 @@ repos:
         language: system
         files: ^frontend/
         types_or: [javascript, tsx, ts, json, css]
+
+  # Fork：Memory Bank 护栏——非负责人不得改 canonical（见 .cursor/rules/Memory-Bank-Protocol.mdc）
+  - repo: local
+    hooks:
+      - id: block-canonical-memory
+        name: block non-owner canonical memory-bank edits
+        entry: scripts/hooks/block_canonical_memory.sh
+        language: script
+        pass_filenames: true
+        files: '^memory-bank/([^/]+\.md|archive/.*|OWNERS)$'

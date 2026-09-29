@@ -1,0 +1,14 @@
+# Memory Bank canonical 写入负责人名单
+# ------------------------------------------------------------
+# 只有此名单内的账号可以直接修改 canonical：
+#   - memory-bank/ 根目录下的核心 .md（activeContext / systemPatterns / progress /
+#     techContext / productContext / projectBrief）
+#   - memory-bank/archive/
+# 其他开发者只能写自己的分片：memory-bank/personal/<自己>.md
+#
+# 用途：
+#   - CI（.github/workflows/memory-bank-guard.yml）按 GitHub 用户名校验 PR 作者
+#   - 本地 AI / pre-commit 按 `git config user.email` 判定身份
+#
+# 格式（每行一人，井号开头为注释）： <GitHub 用户名>  <git commit email>
+WillTheFabulous  weixiaothink@gmail.com
