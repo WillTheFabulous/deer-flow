@@ -428,15 +428,21 @@ class TestForkManagerThreadsAndPersona:
 
     def test_legacy_thread_without_pinned_agent_uses_stored_persona(self, tmp_path):
         manager, _bus, store = _manager(tmp_path)
-        store.set_thread_id("test", "chat1", "legacy")
-        store.set_agent("test", "chat1", "software-team")
         msg = InboundMessage(channel_name="test", chat_id="chat1", user_id="user1", text="hi")
+        assert _run(manager._load_thread_agent(manager._client, msg, "no-persona-thread")) is None
 
+        store.set_agent("test", "chat1", "software-team")
         agent = _run(manager._load_thread_agent(manager._client, msg, "legacy"))
 
         assert agent == "software-team"
         assert manager._thread_agent_names["legacy"] == "software-team"
-        assert _run(manager._load_thread_agent(manager._client, msg, "other-thread")) is None
+
+    def test_pinned_thread_ignores_stored_persona(self, tmp_path):
+        manager, _bus, store = _manager(tmp_path)
+        store.set_agent("test", "chat1", "software-team")
+        manager._client.threads.get = AsyncMock(return_value={"thread_id": "t1", "metadata": {"channel_agent_name": "lead_agent"}})
+        msg = InboundMessage(channel_name="test", chat_id="chat1", user_id="user1", text="hi")
+        assert _run(manager._load_thread_agent(manager._client, msg, "t1")) == "lead_agent"
 
 
 class TestForkManagerSettings:
@@ -557,6 +563,97 @@ class TestForkManagerSessions:
         from_card = InboundMessage(channel_name="test", chat_id="chat1", user_id="user1", text="", metadata={FORK_SOURCE_METADATA_KEY: CARD_ACTION_SOURCE})
         assert _run(manager._handle_sessions_command(from_card, "_gcdelete t9")) is None
         manager._client.threads.delete.assert_awaited_with("t9")
+
+
+class _FakeConnectionRepo:
+    """只实现 manager 用到的线程映射接口（与上游 ChannelConnectionRepository 同签名）。"""
+
+    def __init__(self) -> None:
+        self.threads: dict[tuple[str, str, str], str] = {}
+
+    async def get_thread_id(self, connection_id: str, external_conversation_id: str, external_topic_id: str | None = None) -> str | None:
+        return self.threads.get((connection_id, external_conversation_id, external_topic_id or ""))
+
+    async def set_thread_id(self, *, connection_id: str, owner_user_id: str, provider: str, external_conversation_id: str, thread_id: str, external_topic_id: str | None = None) -> None:
+        self.threads[(connection_id, external_conversation_id, external_topic_id or "")] = thread_id
+
+
+def _bound_manager(tmp_path: Path) -> tuple[ForkChannelManager, ChannelStore, _FakeConnectionRepo]:
+    repo = _FakeConnectionRepo()
+    store = ChannelStore(path=tmp_path / "store.json")
+    manager = ForkChannelManager(bus=MessageBus(), store=store, connection_repo=repo)
+    manager._client = _mock_client()
+    return manager, store, repo
+
+
+def _bound_msg(text: str = "", *, metadata: dict | None = None) -> InboundMessage:
+    return InboundMessage(
+        channel_name="feishu",
+        chat_id="chat1",
+        user_id="ou_x",
+        text=text,
+        msg_type=InboundMessageType.COMMAND,
+        connection_id="conn-1",
+        owner_user_id="admin-1",
+        metadata=metadata or {},
+    )
+
+
+class TestForkManagerBoundIdentity:
+    def _seed(self, store: ChannelStore, repo: _FakeConnectionRepo) -> None:
+        for thread_id, title in (("t1", "会话甲"), ("t2", "会话乙")):
+            store.add_session("feishu", "chat1", thread_id)
+            store.set_session_title("feishu", "chat1", thread_id, title)
+        repo.threads[("conn-1", "chat1", "")] = "t2"
+
+    def test_switch_writes_the_connection_repo(self, tmp_path):
+        manager, store, repo = _bound_manager(tmp_path)
+        self._seed(store, repo)
+        msg = _bound_msg()
+
+        assert "✓ 会话乙" in _run(manager._handle_sessions_command(msg, ""))
+        assert "已切换到会话：会话甲" in _run(manager._handle_sessions_command(msg, "switch t1"))
+        assert repo.threads[("conn-1", "chat1", "")] == "t1"
+
+    def test_deleting_the_current_session_repoints_then_creates(self, tmp_path):
+        manager, store, repo = _bound_manager(tmp_path)
+        self._seed(store, repo)
+        msg = _bound_msg()
+
+        reply = _run(manager._handle_sessions_command(msg, "delete t2"))
+        assert "已自动切换到最近会话：会话甲" in reply
+        assert repo.threads[("conn-1", "chat1", "")] == "t1"
+
+        reply = _run(manager._handle_sessions_command(msg, "delete t1"))
+        assert "已为你开启新会话" in reply
+        assert repo.threads[("conn-1", "chat1", "")] == "t-new"
+
+    def test_card_gcdelete_fixes_the_bound_pointer(self, tmp_path):
+        manager, store, repo = _bound_manager(tmp_path)
+        self._seed(store, repo)
+        store.remove_session("feishu", "chat1", "t2")
+        msg = _bound_msg(metadata={FORK_SOURCE_METADATA_KEY: CARD_ACTION_SOURCE})
+
+        assert _run(manager._handle_sessions_command(msg, "_gcdelete t2")) is None
+        manager._client.threads.delete.assert_awaited()
+        assert repo.threads[("conn-1", "chat1", "")] == "t1"
+
+    def test_first_bound_lookup_adopts_an_accessible_legacy_pointer(self, tmp_path):
+        manager, store, repo = _bound_manager(tmp_path)
+        store.set_thread_id("feishu", "chat1", "legacy")
+
+        assert _run(manager._lookup_thread_id(_bound_msg())) == "legacy"
+        assert repo.threads[("conn-1", "chat1", "")] == "legacy"
+
+    def test_inaccessible_legacy_pointer_is_skipped_once(self, tmp_path):
+        manager, store, repo = _bound_manager(tmp_path)
+        store.set_thread_id("feishu", "chat1", "legacy")
+        manager._client.threads.get = AsyncMock(side_effect=RuntimeError("404"))
+
+        assert _run(manager._lookup_thread_id(_bound_msg())) is None
+        assert _run(manager._lookup_thread_id(_bound_msg())) is None
+        assert manager._client.threads.get.await_count == 1
+        assert repo.threads == {}
 
 
 class TestForkManagerStreamingProgress:

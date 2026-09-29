@@ -119,6 +119,8 @@ class ForkChannelManager(ChannelManager):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.live_runs = LiveRunRegistry()
+        # 已尝试过沿用旧指针的会话 (connection_id, chat_id, topic_id)
+        self._legacy_adoption_checked: set[tuple[str, str, str | None]] = set()
 
     # -- 上游钩子 -------------------------------------------------------------
 
@@ -161,11 +163,41 @@ class ForkChannelManager(ChannelManager):
         if agent_name is not None:
             return agent_name
         stored = self.store.get_agent(msg.channel_name, msg.chat_id)
-        if stored and self.store.get_thread_id(msg.channel_name, msg.chat_id) == thread_id:
-            # 旧 fork 创建的线程没有钉住 agent：沿用会话人设，保持升级前后行为一致
+        if stored:
+            # 线程没有钉住 agent（旧 fork 线程）却有会话人设：沿用它。fork 新建的线程在有人设时都会钉住，
+            # 切换会话也会恢复该会话的人设，所以这里只会命中升级前的线程。
             self._remember_thread_agent(thread_id, stored)
             return stored
         return None
+
+    def _is_bound(self, msg: InboundMessage) -> bool:
+        return bool(msg.connection_id and msg.owner_user_id and self._connection_repo is not None)
+
+    async def _lookup_thread_id(self, msg: InboundMessage) -> str | None:
+        thread_id = await super()._lookup_thread_id(msg)
+        if thread_id or not self._is_bound(msg):
+            return thread_id
+        return await self._adopt_legacy_thread(msg)
+
+    async def _adopt_legacy_thread(self, msg: InboundMessage) -> str | None:
+        """刚绑定、绑定库里还没有映射时，沿用绑定前 ChannelStore 里的会话指针，让对话接着进行。
+
+        只有线程归属已迁移到该账号（见 scripts/fork/migrate_default_owner.py）才能读到它；
+        读不到就放弃，下一条消息照常新建会话。每个会话在进程内只尝试一次。
+        """
+        key = (msg.connection_id or "", msg.chat_id, msg.topic_id)
+        legacy = self.store.get_thread_id(msg.channel_name, msg.chat_id, topic_id=msg.topic_id)
+        if not legacy or key in self._legacy_adoption_checked:
+            return None
+        self._legacy_adoption_checked.add(key)
+        try:
+            await self._get_client().threads.get(legacy, **self._owner_kwargs(msg))
+        except Exception:
+            logger.info("[Fork] legacy thread %s is not accessible for the bound owner; a new conversation will start", legacy)
+            return None
+        await self._store_thread_id(msg, legacy)
+        logger.info("[Fork] adopted legacy thread %s for connection %s", legacy, msg.connection_id)
+        return legacy
 
     # -- 命令 ---------------------------------------------------------------
 
@@ -446,17 +478,19 @@ class ForkChannelManager(ChannelManager):
     # -- /sessions 多会话 ----------------------------------------------------
 
     async def _handle_sessions_command(self, msg: InboundMessage, arg: str) -> str | None:
-        """无参列表；子命令 switch / view / rename / delete / new。返回 None 表示静默。"""
-        if msg.connection_id:
-            return "当前会话通过 DeerFlow 账号连接接入，暂不支持 /sessions。"
+        """无参列表；子命令 switch / view / rename / delete / new。返回 None 表示静默。
+
+        会话登记在 ChannelStore（按 chat）；「当前会话」指针走上游 ``_lookup_thread_id`` /
+        ``_store_thread_id``：已绑定账号时在绑定库，未绑定时在 ChannelStore。
+        """
         parts = arg.split(maxsplit=1)
         sub = parts[0].lower() if parts else ""
         rest = parts[1].strip() if len(parts) > 1 else ""
 
         if sub in ("", "list", "ls"):
-            return self._render_sessions_list(msg)
+            return await self._render_sessions_list(msg)
         if sub in ("switch", "use", "resume", "open"):
-            return self._switch_session(msg, rest)
+            return await self._switch_session(msg, rest)
         if sub in ("view", "show", "info"):
             return await self._view_session(msg, rest)
         if sub in ("rename", "name"):
@@ -467,9 +501,13 @@ class ForkChannelManager(ChannelManager):
             await self._create_thread(self._get_client(), msg)
             return "已开启新会话。直接发消息即可开始。"
         if sub == "_gcdelete":
-            # 卡片删除已在本地移除并刷新卡片，这里只清理网关线程且不回消息；只接受卡片回调投递的命令
+            # 卡片删除已在本地移除登记并刷新卡片：这里清理网关线程，删的若是当前会话再修正指针；不回消息。
+            # 只接受卡片回调投递的命令
             if rest and msg.metadata.get(FORK_SOURCE_METADATA_KEY) == CARD_ACTION_SOURCE:
+                was_current = rest == await self._lookup_thread_id(msg)
                 await self._delete_gateway_thread(msg, rest)
+                if was_current:
+                    await self._repoint_after_delete(msg)
             return None
         return f"未知子命令：{sub}\n{_SESSIONS_HINT}"
 
@@ -477,11 +515,22 @@ class ForkChannelManager(ChannelManager):
         agent = session.get("agent")
         return persona_label(agent if isinstance(agent, str) else None)
 
-    def _render_sessions_list(self, msg: InboundMessage) -> str:
+    async def _repoint_after_delete(self, msg: InboundMessage) -> dict[str, Any] | None:
+        """当前会话被删后切到剩余最近的会话；一个不剩就新开一个。返回新的当前会话快照（新开时为 None）。"""
+        remaining = self.store.list_sessions(msg.channel_name, msg.chat_id)
+        if remaining:
+            thread_id = remaining[0]["thread_id"]
+            snapshot = self.store.switch_session(msg.channel_name, msg.chat_id, thread_id)
+            await self._store_thread_id(msg, thread_id)
+            return snapshot
+        await self._create_thread(self._get_client(), msg)
+        return None
+
+    async def _render_sessions_list(self, msg: InboundMessage) -> str:
         sessions = self.store.list_sessions(msg.channel_name, msg.chat_id)
         if not sessions:
             return "当前没有会话记录。直接发消息即可开始第一个会话。"
-        current = self.store.get_thread_id(msg.channel_name, msg.chat_id, topic_id=msg.topic_id)
+        current = await self._lookup_thread_id(msg)
         lines = [f"会话列表（共 {len(sessions)} 个）："]
         for idx, session in enumerate(sessions, 1):
             mark = "✓ " if session.get("thread_id") == current else ""
@@ -493,13 +542,14 @@ class ForkChannelManager(ChannelManager):
         lines.extend(["", _SESSIONS_HINT])
         return "\n".join(lines)
 
-    def _switch_session(self, msg: InboundMessage, ref: str) -> str:
+    async def _switch_session(self, msg: InboundMessage, ref: str) -> str:
         target = _resolve_session_ref(self.store.list_sessions(msg.channel_name, msg.chat_id), ref)
         if target is None:
             return "找不到该会话。用 /sessions 查看列表。"
         snapshot = self.store.switch_session(msg.channel_name, msg.chat_id, target["thread_id"])
         if snapshot is None:
             return "切换失败：会话不存在。"
+        await self._store_thread_id(msg, target["thread_id"])
         settings = [f"人设：{self._session_persona_label(snapshot)}"]
         if snapshot.get("model"):
             settings.append(f"模型：{snapshot['model']}")
@@ -513,7 +563,7 @@ class ForkChannelManager(ChannelManager):
         if target is None:
             return "找不到该会话。用 /sessions 查看列表。"
         thread_id = target["thread_id"]
-        current = self.store.get_thread_id(msg.channel_name, msg.chat_id, topic_id=msg.topic_id)
+        current = await self._lookup_thread_id(msg)
         lines = [f"会话：{session_display_title(target)}" + ("（当前）" if thread_id == current else ""), f"人设：{self._session_persona_label(target)}"]
         if target.get("model"):
             lines.append(f"模型：{target['model']}")
@@ -547,18 +597,15 @@ class ForkChannelManager(ChannelManager):
         if target is None:
             return "找不到该会话。用 /sessions 查看列表。"
         thread_id = target["thread_id"]
+        was_current = thread_id == await self._lookup_thread_id(msg)
         await self._delete_gateway_thread(msg, thread_id)
         result = self.store.remove_session(msg.channel_name, msg.chat_id, thread_id)
         if not result.get("removed"):
             return "删除失败：会话不存在。"
         lines = [f"已删除会话：{session_display_title(target)}"]
-        if result.get("was_current"):
-            new_current = result.get("new_current")
-            if new_current:
-                snapshot = self.store.get_session(msg.channel_name, msg.chat_id, new_current) or {}
-                lines.append(f"已自动切换到最近会话：{session_display_title(snapshot)}")
-            else:
-                lines.append("这是当前会话，已清空；下条消息将开启新会话。")
+        if was_current:
+            snapshot = await self._repoint_after_delete(msg)
+            lines.append(f"已自动切换到最近会话：{session_display_title(snapshot)}" if snapshot else "这是当前会话，已为你开启新会话。")
         return "\n".join(lines)
 
     # -- 网关线程操作（/sessions 使用，失败只告警）----------------------------
