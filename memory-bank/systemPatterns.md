@@ -39,7 +39,7 @@
 
 ## 5. 模型与配置约定
 
-- `config.yaml` 纳入版本管理，只写 `$VAR`；启用块放在对应注释示例块之前；fork 定制项：models、loop_detection、sandbox（host bash + mounts）、subagents、run_events、channels。
+- 部署配置是被追踪的 `deploy/fork/config.yaml`，根目录 `config.yaml` 是指向它的本机软链（上游 gitignore 忽略；fork CI 因此看不到它）；只写 `$VAR`；启用块放在对应注释示例块之前；fork 定制项：models、loop_detection、sandbox（host bash + mounts）、subagents、run_events、channel_connections、channels。
 - `models` 第一个即默认模型（title / summarization / memory 在 `model_name: null` 时复用）。
 - 豆包 thinking 走 `extra_body.thinking.type`；硅基流动走 `extra_body.enable_thinking`；MiniMax-M2.5 只能开 thinking。
 - 同步上游后对比新旧 `config.example.yaml` 手工合入新字段与 `config_version`，再复核 fork 定制项；**禁用 `make config-upgrade`**（`yaml.dump` 写回会删光注释）。fork 只加可选字段时不改 `config_version`。

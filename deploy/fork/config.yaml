@@ -13,9 +13,10 @@
 #   middlewares (not a config-schema field), so it can be set on a container
 #   without mounting a `config.yaml`.
 # - Environment variables are available for all field values. Example: `api_key: $OPENAI_API_KEY`
-# - Fork（WillTheFabulous/deer-flow）：本文件由 config.example.yaml 迁移而来并纳入版本管理，只用 $VAR
-#   引用密钥（真实值在 .env）。定制项：models、loop_detection、sandbox、subagents、run_events、channels。
-#   同步上游后先跑 `make config-upgrade` 合并新字段，再复核这些定制项。
+# - Fork（WillTheFabulous/deer-flow）：本文件是被追踪的部署配置（deploy/fork/config.yaml），根目录的
+#   config.yaml 是指向它的本机软链（scripts/fork/rebuild-dev.sh 会自动创建）。只用 $VAR 引用密钥（真实值在 .env）。
+#   定制项：models、loop_detection、sandbox、subagents、run_events、channel_connections、channels。
+#   同步上游后对比新旧 config.example.yaml 手工合入新字段；不要用 `make config-upgrade`（会删光注释）。
 # - The `use` path is a string that looks like "package_name.sub_package_name.module_name:class_name/variable_name".
 
 # ============================================================================
@@ -3147,6 +3148,15 @@ run_ownership:
 # - Slack, Discord, Feishu, DingTalk, WeChat, and WeCom use `/connect <code>`
 #   through the already-running bot/app.
 #
+# Fork：飞书身份绑定到 Web 账号，飞书与 Web 共享线程、记忆与文件（运行身份 = Web 账号）。
+# 绑定方法：Web 设置里连接飞书拿到连接码，在飞书单聊里发 `/connect <码>`；群聊需在群里单独绑定。
+# 未绑定的消息会被拒绝（require_bound_identity），fork 的卡片命令同样遵守。
+channel_connections:
+  enabled: true
+  require_bound_identity: true
+  feishu:
+    enabled: true
+
 # channel_connections:
 #   enabled: false
 #   # Security: keep this enabled unless you intentionally want legacy open-bot behavior.

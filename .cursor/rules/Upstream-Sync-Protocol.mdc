@@ -14,6 +14,6 @@ alwaysApply: true
   4. worktree 内跑 lint + 全量单测：根目录不能有 `config.yaml`（上游 CI 没有它），并设 `DEER_FLOW_HOME=$(mktemp -d)`；
   5. 用户确认后再 `git push --force-with-lease origin main`，推送后看 fork CI；
   6. 主工作目录切换分支与容器重建单独执行（热重载会让飞书机器人立刻跑新代码）。
-- **配置同步**：对比新旧示例 `git diff <旧基线> upstream/main -- config.example.yaml`，把新增字段与 `config_version` 手工合入部署配置，再复核 fork 定制项。**不要用 `make config-upgrade`**：它用 `yaml.dump` 写回，会删光全部注释；启用 `pii_redaction` 时还会把随机密钥写进被追踪的文件。
+- **配置同步**：对比新旧示例 `git diff <旧基线> upstream/main -- config.example.yaml`，把新增字段与 `config_version` 手工合入部署配置 `deploy/fork/config.yaml`，再复核 fork 定制项。**不要用 `make config-upgrade`**：它用 `yaml.dump` 写回，会删光全部注释；启用 `pii_redaction` 时还会把随机密钥写进被追踪的文件。
 - **网络兜底**：宿主机 DNS 异常时，先查 `systemctl status tailscale-aliyun-allow.timer`；临时绕过可用 `git -c http.curloptResolve=github.com:443:<IP> fetch upstream`。
 - 大跨度同步后第一次推送会触发上游全套 CI（E2E、Skill Review、agent-guidance 会扫到上游自身的问题），按提交区间区分是否 fork 引入。

@@ -15,7 +15,7 @@ alwaysApply: true
 - 主工作目录 `/work/deerflow/deer-flow`（dev 容器挂载的就是它）；上游同步在临时 worktree 里进行，见 `Upstream-Sync-Protocol`。
 - 上游权威文档：根目录 `AGENTS.md` / `CLAUDE.md`、`backend/CLAUDE.md`、`backend/app/channels/AGENTS.md`、`frontend/AGENTS.md`。
 - fork 自有代码：`backend/app/channels/fork/`、`docker/docker-compose.cursor-agent.yaml`、`docker/cursor-agent-setup.sh`、`scripts/fork/`；完整补丁清单见 `feature-plans/upstream-sync-2026-09/README.md`。
-- 部署配置纳入版本管理，只写 `$VAR` 引用；真实密钥只放 gitignored 的 `.env`。
+- 部署配置是被追踪的 `deploy/fork/config.yaml`（只写 `$VAR` 引用），根目录 `config.yaml` 是指向它的本机软链；真实密钥只放 gitignored 的 `.env`。
 
 ## 🖥️ Environment
 

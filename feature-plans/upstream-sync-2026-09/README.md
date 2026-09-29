@@ -25,7 +25,8 @@ fork `WillTheFabulous/deer-flow` 原基线是上游 2026-06-09（PR #3460 附近
 | 记忆读取 | 走上游 `get_memory_manager().get_memory()` | 上游改为可插拔记忆后端 |
 | 子任务 token 实时上报 | 不移植 harness 层增量上报；`/status` 读 task 事件的 usage | 上游已发布实时快照，父 run 行只在结束时上报是刻意设计 |
 | cursor-agent | 改为可选叠加文件 `docker-compose.cursor-agent.yaml` | 符合上游 overlay 模式，不改上游 compose / entrypoint |
-| config.yaml | 继续纳入版本管理，以新示例为底迁移定制项 | 旧配置 `config_version 11` → 新 `50` |
+| 部署配置 | 追踪在 `deploy/fork/config.yaml`，根目录 `config.yaml` 为本机软链；以新示例为底迁移定制项 | 旧配置 `config_version 11` → 新 `50`；根目录被追踪的配置会让 fork 上的上游单测在收集阶段失败 |
+| 飞书身份 | 启用上游 `channel_connections` 绑定到 Web 账号（`require_bound_identity`）；fork 渠道功能适配绑定；旧 `default` 数据用迁移脚本转给管理员 | 新版运行身份是 `safe(open_id)`，不绑定会和 Web、旧数据割裂 |
 
 ## fork 补丁清单（同步上游时逐条复核）
 
@@ -34,7 +35,7 @@ fork `WillTheFabulous/deer-flow` 原基线是上游 2026-06-09（PR #3460 附近
 - `backend/app/channels/fork/`：`store_ext.py`、`workdir.py`、`personas.py`、`memory_view.py`、`progress.py`、`manager.py`（`ForkChannelManager`）、`feishu.py`（`ForkFeishuChannel`）
 - `backend/tests/test_channels_fork.py`、`backend/tests/test_subagent_thinking_config.py`
 - `docker/docker-compose.cursor-agent.yaml`、`docker/cursor-agent-setup.sh`、`scripts/fork/rebuild-dev.sh`（国内网络重建 dev 栈）
-- `config.yaml`（强制追踪，上游 `.gitignore` 忽略）
+- `deploy/fork/config.yaml`（被追踪的部署配置；根目录 `config.yaml` 是本机软链，上游 `.gitignore` 忽略）
 - `.cursor/`、`memory-bank/`、`feature-plans/`、`DEPLOYMENT.md`、`.github/CODEOWNERS`、`.github/workflows/memory-bank-guard.yml`、`scripts/memory_bank_budget.sh`、`scripts/hooks/`、`scripts/ci/`
 
 ### 上游文件里的挂接点（冲突多发区）

@@ -10,7 +10,7 @@
 ## Docker（dev 栈，项目名 deer-flow-dev）
 
 - `scripts/docker.sh`（`make docker-*`）：`docker-compose-dev.yaml` + 自动叠加 `docker-compose.cursor-agent.yaml`（`DEER_FLOW_CURSOR_AGENT=0` 可关）。重建镜像只用 `scripts/fork/rebuild-dev.sh`，不用 `make docker-start`。
-- gateway 挂载：`../backend`（热重载）、`../`→`/app/project`（从这里读 `config.yaml`）、`~/.cursor-cli`→`/root/.cursor`、`/work/projects`→`/projects`、`/prod_data`→`/prod_data`。
+- gateway 挂载：`../backend`（热重载）、`../`→`/app/project`（读 `config.yaml` 软链 → `deploy/fork/config.yaml`）、`~/.cursor-cli`→`/root/.cursor`、`/work/projects`→`/projects`、`/prod_data`→`/prod_data`。
 - nginx 默认只绑 `127.0.0.1`；局域网访问要设 `BIND_HOST=0.0.0.0`，并把局域网 IP 加进 `DEER_FLOW_DEV_ALLOWED_ORIGINS`（Next.js dev 来源白名单）。二者都是 compose 插值变量，写在 `docker/.env` 或执行前 export，根目录 `.env` 对它们无效。
 - 线上容器目前仍是 2026-06 的旧 fork 镜像（主目录停在 `legacy/fork-2026-06`），切换步骤见 `feature-plans/upstream-sync-2026-09/progress.md`。
 

@@ -38,6 +38,15 @@ fail() {
     exit 1
 }
 
+# 被追踪的部署配置在 deploy/fork/config.yaml；根目录 config.yaml 是指向它的本机软链（上游 gitignore 忽略它）
+DEPLOY_CONFIG="deploy/fork/config.yaml"
+if [ ! -e config.yaml ] && [ ! -L config.yaml ]; then
+    ln -s "$DEPLOY_CONFIG" config.yaml
+    echo "==> 已创建软链 config.yaml -> $DEPLOY_CONFIG"
+elif [ "$(readlink config.yaml 2>/dev/null)" != "$DEPLOY_CONFIG" ]; then
+    fail "根目录 config.yaml 不是指向 $DEPLOY_CONFIG 的软链：确认其内容已合入部署配置后删除它，再重跑本脚本"
+fi
+
 if grep -qE '^[[:space:]]*UV_INDEX_URL=' .env 2>/dev/null; then
     fail ".env 里有 UV_INDEX_URL：它会注入容器，导致启动时 uv sync --locked 失败，请先删除该行"
 fi

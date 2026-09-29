@@ -18,7 +18,7 @@
 - 人设沿用上游「钉在线程上」：切换人设 = 新会话；`/new` 沿用当前人设；旧 fork 的未钉住线程回落会话人设。
 - `flatten_p2p` 废弃（上游原生单聊单线程 + 行内回复）。
 - 子任务 token：不移植 harness 层增量上报，`/status` 改为读取 task 事件里的 usage。
-- `config.yaml` 继续纳入版本管理，只写 `$VAR`；memory-bank 纳入 git，禁止写入任何密钥。
+- 部署配置追踪在 `deploy/fork/config.yaml`（根目录软链），只写 `$VAR`；memory-bank 纳入 git，禁止写入任何密钥。
 
 ## 活跃 Feature 目录
 

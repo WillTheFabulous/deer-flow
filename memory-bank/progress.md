@@ -48,4 +48,4 @@
 - 上游会为 p2p 的每条回复记录话题映射，`store.json` 会随消息量缓慢增长（旧 fork 曾跳过）。
 - 飞书卡片命令、菜单不经过 manager 的账号绑定检查；启用 `require_bound_identity` 前需补上。
 - 群聊话题下 `/sessions` 仍是 chat 级登记。
-- fork 仓库若启用 GitHub Actions，上游 `backend-unit-tests` 会读到根目录 `config.yaml` 而失败。
+- 大跨度同步后的第一次推送会触发上游全套 CI：agent-guidance（上游 `middlewares/AGENTS.md` 继承链超限）、Skill Review、E2E 书签插件失败与 fork 无关；单测 / Blocking IO 失败已通过把部署配置移到 `deploy/fork/` 解决。

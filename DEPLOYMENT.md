@@ -17,7 +17,7 @@
 - `scripts/docker.sh` 在 dev 栈自动叠加 `docker/docker-compose.cursor-agent.yaml`（`DEER_FLOW_CURSOR_AGENT=0` 可关闭）：
   - 挂载宿主 `~/.cursor-cli` → `/root/.cursor`，`/work/projects` → `/projects`，`/prod_data` → `/prod_data`；
   - 启动前运行 `docker/cursor-agent-setup.sh` 生成 cursor-agent 定向代理 wrapper，再交给上游 `dev-entrypoint.sh`。
-- gateway 挂载 `../backend`（`uvicorn --reload`，**改代码立即作用于线上飞书机器人**）和 `../` → `/app/project`（`config.yaml` 从这里读）。
+- gateway 挂载 `../backend`（`uvicorn --reload`，**改代码立即作用于线上飞书机器人**）和 `../` → `/app/project`（读 `/app/project/config.yaml`，即指向 `deploy/fork/config.yaml` 的软链）。
 - 飞书、微信都是出站长连接，不需要公网 IP。
 
 ## 启动与重建
@@ -81,8 +81,9 @@ bash scripts/fork/rebuild-dev.sh --reset-venv
 
 ## 配置文件
 
-- `config.yaml` **纳入版本管理**（上游 `.gitignore` 忽略它，fork 用 `git add -f` 追踪），只写 `$VAR` 引用；当前 `config_version: 50`。
-- fork 定制项：`models`（豆包 + 硅基流动）、`loop_detection`（阈值 + `tool_freq_overrides`）、`sandbox`（`allow_host_bash: true` + `mounts`）、`subagents`（6 个角色）、`run_events.backend: db`、`channels`（飞书启用、微信关闭、会话默认开 plan mode 与子代理）。
+- 被追踪的部署配置在 **`deploy/fork/config.yaml`**，只写 `$VAR` 引用；当前 `config_version: 50`。
+- 根目录 `config.yaml` 是指向它的**本机软链**（上游 `.gitignore` 忽略它，不进 git）：`ln -s deploy/fork/config.yaml config.yaml`，`rebuild-dev.sh` 缺失时会自动创建。这样 fork 仓库上的上游 CI 看不到根目录配置，单测能正常跑。
+- fork 定制项：`models`（豆包 + 硅基流动）、`loop_detection`（阈值 + `tool_freq_overrides`）、`sandbox`（`allow_host_bash: true` + `mounts`）、`subagents`（6 个角色）、`run_events.backend: db`、`channel_connections`（飞书绑定、`require_bound_identity`）、`channels`（飞书启用、微信关闭、会话默认开 plan mode 与子代理）。
 - 同步上游后：对比新旧示例 `git diff <旧基线> upstream/main -- config.example.yaml`，把新增字段与 `config_version` 手工合入，再复核上述定制项。
   **不要用 `make config-upgrade`**：它用 `yaml.dump` 写回，会删光全部注释；启用 `pii_redaction` 时还会把随机密钥写进被追踪的文件。
 - 本地跑测试：先 `export DEER_FLOW_HOME=$(mktemp -d)`（测试默认写 `backend/.deer-flow`，也就是线上数据目录）；全量测试要在根目录没有 `config.yaml` 的 checkout 里跑（上游 CI 没有它，部分测试在导入时就会读取配置）。
@@ -92,7 +93,7 @@ bash scripts/fork/rebuild-dev.sh --reset-venv
 每个项目根都要**三处一致**：
 
 1. `docker/docker-compose.cursor-agent.yaml` 的 bind（宿主路径 → 容器路径）；
-2. `config.yaml` 的 `sandbox.mounts`（`host_path` = 容器路径，`container_path` = agent 看到的虚拟路径）；
+2. `deploy/fork/config.yaml` 的 `sandbox.mounts`（`host_path` = 容器路径，`container_path` = agent 看到的虚拟路径）；
 3. 修改后 `--force-recreate gateway`。
 
 当前：`/projects` → `/mnt/projects`、`/prod_data` → `/mnt/prod_data`（均为读写）。`/repo` 会列出每个根的直接子目录（卡片最多显示 20 个）。
@@ -111,7 +112,7 @@ bash scripts/fork/rebuild-dev.sh --reset-venv
 
 ## 角色与人设
 
-- 角色子代理在 `config.yaml` 的 `subagents.custom_agents`：requirement-analyst / architect-planner / implementer / tester / code-reviewer / integrator-verifier（`thinking_enabled: true`）。
+- 角色子代理在 `deploy/fork/config.yaml` 的 `subagents.custom_agents`：requirement-analyst / architect-planner / implementer / tester / code-reviewer / integrator-verifier（`thinking_enabled: true`）。
 - 人设 = Custom Agent（Web 端创建，按用户隔离；旧的共享目录 `backend/.deer-flow/agents/<name>/` 仍可读）。切换人设会以该人设开启新会话。
 - 角色通过 `bash` 调 `cursor-agent`：headless 必带 `--trust`；单条 bash 命令超时 600 秒，长任务用 `nohup` + 轮询。
 
@@ -146,4 +147,4 @@ fork 没有新增 Gateway 路由。对外只有 nginx 入口（`/` 前端、`/ap
 - `BIND_HOST=0.0.0.0` 会把入口暴露到局域网：先在 `/setup` 建好管理员。
 - `/prod_data` 以读写方式挂进 gateway，agent 可以修改其中的文件（包括其他项目）。
 - 飞书卡片命令、菜单不经过账号绑定检查；启用 `channel_connections` / `require_bound_identity` 前需要补上。
-- 密钥只放 `.env`；`config.yaml`、memory-bank、feature-plans、本文件都进 git，禁止写入真实密钥（CI 的 `memory-bank-guard` 会跑 gitleaks）。
+- 密钥只放 `.env`；`deploy/fork/config.yaml`、memory-bank、feature-plans、本文件都进 git，禁止写入真实密钥（CI 的 `memory-bank-guard` 会跑 gitleaks）。
