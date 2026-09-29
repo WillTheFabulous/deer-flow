@@ -121,11 +121,23 @@ class ForkChannelManager(ChannelManager):
         self.live_runs = LiveRunRegistry()
         # 已尝试过沿用旧指针的会话 (connection_id, chat_id, topic_id)
         self._legacy_adoption_checked: set[tuple[str, str, str | None]] = set()
+        # 进行中的流式 run：id(msg) → 观察者，供 _handle_streaming_chat 退出时兜底收尾
+        self._stream_observers: dict[int, StreamProgressObserver] = {}
 
     # -- 上游钩子 -------------------------------------------------------------
 
     def _make_stream_observer(self, msg: InboundMessage, thread_id: str) -> StreamProgressObserver:
-        return StreamProgressObserver(self, msg, thread_id)
+        observer = StreamProgressObserver(self, msg, thread_id)
+        self._stream_observers[id(msg)] = observer
+        return observer
+
+    async def _handle_streaming_chat(self, client, msg: InboundMessage, thread_id: str, *args: Any, **kwargs: Any) -> None:
+        try:
+            await super()._handle_streaming_chat(client, msg, thread_id, *args, **kwargs)
+        finally:
+            observer = self._stream_observers.pop(id(msg), None)
+            if observer is not None:
+                observer.close()
 
     def _resolve_run_params(self, msg: InboundMessage, thread_id: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
         assistant_id, run_config, run_context = super()._resolve_run_params(msg, thread_id)
@@ -220,7 +232,7 @@ class ForkChannelManager(ChannelManager):
             return
 
         if command == "repo":
-            reply: str | None = self._handle_repo_command(msg, arg)
+            reply: str | None = await self._handle_repo_command(msg, arg)
         elif command == "sessions":
             reply = await self._handle_sessions_command(msg, arg)
         elif command == "model":
@@ -304,7 +316,11 @@ class ForkChannelManager(ChannelManager):
 
     # -- 工作目录 -----------------------------------------------------------
 
-    def _handle_repo_command(self, msg: InboundMessage, arg: str) -> str:
+    async def _handle_repo_command(self, msg: InboundMessage, arg: str) -> str:
+        return await asyncio.to_thread(self._repo_command_blocking, msg, arg)
+
+    def _repo_command_blocking(self, msg: InboundMessage, arg: str) -> str:
+        """扫描 / 校验项目目录都是文件系统 IO，在线程池里执行。"""
         if arg.lower() == "clear":
             cleared = self.store.clear_workdir(msg.channel_name, msg.chat_id)
             return "已清除工作目录设置。" if cleared else "当前未设置工作目录。"

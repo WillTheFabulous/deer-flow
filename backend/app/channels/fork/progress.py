@@ -182,6 +182,12 @@ class LiveRunRegistry:
         now = time.time()
         self._runs[thread_id] = {"status": "running", "started_at": now, "updated_at": now, "todos": None, "steps": []}
 
+    def touch(self, thread_id: str) -> None:
+        """只刷新最近活动时间（高频的消息事件用）。"""
+        snapshot = self._runs.get(thread_id)
+        if snapshot is not None:
+            snapshot["updated_at"] = time.time()
+
     def update(self, thread_id: str, *, todos: list[dict[str, Any]] | None, steps: Mapping[str, Mapping[str, str]]) -> None:
         snapshot = self._runs.get(thread_id)
         if snapshot is None:
@@ -239,7 +245,9 @@ class StreamProgressObserver:
         self._todos: list[dict[str, Any]] | None = None
         self._steps: dict[str, dict[str, str]] = {}
         self._published_signature: str | None = None
+        self._unpublished = False
         self._owns_snapshot = False
+        self._finished = False
 
     def stream_modes(self, modes: list[str]) -> list[str]:
         return modes if CUSTOM_STREAM_MODE in modes else [*modes, CUSTOM_STREAM_MODE]
@@ -251,7 +259,7 @@ class StreamProgressObserver:
         return self._todos is not None or bool(self._steps)
 
     async def on_event(self, event: str, data: Any) -> bool:
-        """处理一个流事件；返回进度是否有尚未发布的变化。"""
+        """处理一个流事件；返回进度是否有尚未发布的变化。只有 values / custom 事件会改动进度。"""
         try:
             if not self._owns_snapshot:
                 # 只有真正收到流事件的 run 才拥有快照：撞忙被拒的 run 在发事件前就报错，不会覆盖运行中的快照
@@ -265,8 +273,12 @@ class StreamProgressObserver:
                 failed_step = apply_custom_progress_event(self._steps, data)
                 if failed_step is not None:
                     await self._manager.publish_failure_notification(self._msg, self._thread_id, failed_step)
+            else:
+                self._manager.live_runs.touch(self._thread_id)
+                return self._unpublished
             self._manager.live_runs.update(self._thread_id, todos=self._todos, steps=self._steps)
-            return self._has_progress() and self._signature() != self._published_signature
+            self._unpublished = self._has_progress() and self._signature() != self._published_signature
+            return self._unpublished
         except Exception:
             logger.debug("[Fork] progress observer failed on %s event", event, exc_info=True)
             return False
@@ -279,12 +291,14 @@ class StreamProgressObserver:
             if self._steps:
                 metadata[PROGRESS_STEPS_KEY] = steps_for_metadata(self._steps)
             self._published_signature = self._signature()
+            self._unpublished = False
         except Exception:
             logger.debug("[Fork] progress observer failed to attach metadata", exc_info=True)
         return metadata
 
     def finish(self, result: Any) -> None:
         """run 结束：收尾实时快照，并缓存会话标题 / 刷新会话活跃时间。"""
+        self._finished = True
         try:
             final_todos = extract_todos(result)
             if final_todos is not None:
@@ -295,3 +309,14 @@ class StreamProgressObserver:
             self._manager.record_session_activity(self._msg, self._thread_id, result)
         except Exception:
             logger.debug("[Fork] progress observer failed to finish", exc_info=True)
+
+    def close(self) -> None:
+        """run 没走到 finish（被取消 / 最终回复发送失败）时收尾快照，免得 /status 一直显示执行中。可重复调用。"""
+        if self._finished:
+            return
+        self._finished = True
+        try:
+            if self._owns_snapshot:
+                self._manager.live_runs.finish(self._thread_id)
+        except Exception:
+            logger.debug("[Fork] progress observer failed to close", exc_info=True)

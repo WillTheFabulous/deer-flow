@@ -37,6 +37,8 @@ from app.channels.fork.progress import (
     NOTIFICATION_METADATA_KEY,
     PROGRESS_STEPS_KEY,
     PROGRESS_TODOS_KEY,
+    LiveRunRegistry,
+    StreamProgressObserver,
     apply_custom_progress_event,
     render_progress_block,
 )
@@ -479,15 +481,15 @@ class TestForkManagerSettings:
         manager, bus, store = _manager(tmp_path)
         msg = InboundMessage(channel_name="test", chat_id="chat1", user_id="user1", text="/repo demo")
 
-        assert manager._handle_repo_command(msg, "nope").startswith("无效的工作目录")
-        assert manager._handle_repo_command(msg, "demo") == "工作目录已设置为：/mnt/projects/demo"
-        assert "当前工作目录：/mnt/projects/demo" in manager._handle_repo_command(msg, "")
+        assert _run(manager._handle_repo_command(msg, "nope")).startswith("无效的工作目录")
+        assert _run(manager._handle_repo_command(msg, "demo")) == "工作目录已设置为：/mnt/projects/demo"
+        assert "当前工作目录：/mnt/projects/demo" in _run(manager._handle_repo_command(msg, ""))
 
         _run(_dispatch(manager, bus, InboundMessage(channel_name="test", chat_id="chat1", user_id="user1", text="列出文件")))
         sent = manager._client.runs.wait.call_args.kwargs["input"]["messages"][0]["content"]
         assert sent.startswith("[当前工作目录：/mnt/projects/demo。")
         assert sent.endswith("列出文件")
-        assert manager._handle_repo_command(msg, "clear") == "已清除工作目录设置。"
+        assert _run(manager._handle_repo_command(msg, "clear")) == "已清除工作目录设置。"
         assert store.get_workdir("test", "chat1") is None
 
     def test_memory_command_uses_channel_owner_bucket(self, tmp_path):
@@ -696,6 +698,56 @@ class TestForkManagerStreamingProgress:
         assert final.metadata[PROGRESS_STEPS_KEY][0]["status"] == "failed"
         assert store.get_session("feishu", "chat1", "t-stream")["title"] == "功能实现"
         assert manager.live_runs.get("t-stream")["status"] == "finished"
+
+    def test_failed_final_publish_still_closes_the_live_snapshot(self, tmp_path):
+        manager, bus, _store = _manager(tmp_path, _mock_client(thread_id="t-stream"))
+        manager._client.runs.stream = MagicMock(return_value=_async_iter([_part("values", {"messages": [], "todos": [{"content": "x", "status": "in_progress"}]})]))
+        bus.publish_outbound = AsyncMock(side_effect=RuntimeError("bus closed"))
+        msg = InboundMessage(channel_name="feishu", chat_id="chat1", user_id="user1", text="hi")
+
+        with pytest.raises(RuntimeError):
+            _run(manager._handle_streaming_chat(manager._client, msg, "t-stream", "lead_agent", {}, {}, {"role": "human", "content": "hi"}))
+
+        assert manager.live_runs.get("t-stream")["status"] == "finished"
+        assert manager._stream_observers == {}
+
+
+class TestStreamProgressObserver:
+    @staticmethod
+    def _observer() -> tuple[StreamProgressObserver, LiveRunRegistry]:
+        registry = LiveRunRegistry()
+        manager = SimpleNamespace(live_runs=registry, publish_failure_notification=AsyncMock(), record_session_activity=MagicMock())
+        msg = InboundMessage(channel_name="feishu", chat_id="chat1", user_id="user1", text="hi")
+        return StreamProgressObserver(manager, msg, "t1"), registry
+
+    def test_message_events_only_touch_and_keep_pending_progress(self):
+        observer, registry = self._observer()
+        chunk = [{"id": "ai-1", "content": "好", "type": "AIMessageChunk"}, {}]
+
+        assert _run(observer.on_event("messages-tuple", chunk)) is False
+        assert _run(observer.on_event("values", {"todos": [{"content": "x", "status": "in_progress"}]})) is True
+        registry.get("t1")["updated_at"] = 0.0
+        assert _run(observer.on_event("messages-tuple", chunk)) is True
+        assert registry.get("t1")["updated_at"] > 0.0
+
+        observer.outbound_metadata({})
+        assert _run(observer.on_event("messages-tuple", chunk)) is False
+
+    def test_close_ends_an_unfinished_snapshot_once(self):
+        observer, registry = self._observer()
+        _run(observer.on_event("values", {"todos": []}))
+        assert registry.get("t1")["status"] == "running"
+
+        observer.close()
+        observer.close()
+        assert registry.get("t1")["status"] == "finished"
+
+        finished, registry2 = self._observer()
+        _run(finished.on_event("values", {"todos": []}))
+        finished.finish({"todos": []})
+        registry2.start("t1")
+        finished.close()
+        assert registry2.get("t1")["status"] == "running"
 
 
 # ---------------------------------------------------------------------------
