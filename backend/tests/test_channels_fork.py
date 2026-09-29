@@ -4,7 +4,7 @@
 - ChannelStore 扩展字段：工作目录 / 人设 / 模型 / 多会话注册表 / open_id 映射，以及 set_thread_id 合并写
 - 记忆视图与流式进度的纯函数
 - ForkChannelManager：/repo /model /agent /sessions /memory /status /help、人设钉线程与兼容旧线程、流式进度
-- ForkFeishuChannel：卡片构建、裸命令回卡片、卡片回调、机器人菜单、失败通知卡片
+- ForkFeishuChannel：卡片构建、裸命令回卡片、卡片回调、机器人菜单、失败通知卡片、绑定身份与未绑定门禁
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,6 +22,8 @@ import pytest
 from app.channels.fork import feishu as fork_feishu
 from app.channels.fork import manager as fork_manager
 from app.channels.fork.feishu import (
+    CardActionContext,
+    ChatIdentity,
     ForkFeishuChannel,
     build_agent_card,
     build_memory_card,
@@ -638,6 +641,17 @@ class TestForkManagerBoundIdentity:
         manager._client.threads.delete.assert_awaited()
         assert repo.threads[("conn-1", "chat1", "")] == "t1"
 
+    def test_card_gcswitch_writes_the_bound_pointer(self, tmp_path):
+        manager, store, repo = _bound_manager(tmp_path)
+        self._seed(store, repo)
+        card = _bound_msg(metadata={FORK_SOURCE_METADATA_KEY: CARD_ACTION_SOURCE})
+
+        assert _run(manager._handle_sessions_command(card, "_gcswitch t1")) is None
+        assert repo.threads[("conn-1", "chat1", "")] == "t1"
+        assert _run(manager._handle_sessions_command(_bound_msg(), "_gcswitch t2")) is None
+        assert _run(manager._handle_sessions_command(card, "_gcswitch ghost")) is None
+        assert repo.threads[("conn-1", "chat1", "")] == "t1"
+
     def test_first_bound_lookup_adopts_an_accessible_legacy_pointer(self, tmp_path):
         manager, store, repo = _bound_manager(tmp_path)
         store.set_thread_id("feishu", "chat1", "legacy")
@@ -693,13 +707,20 @@ def _buttons(card: dict) -> list[dict]:
     return [button for element in card["elements"] if element.get("tag") == "action" for button in element["actions"]]
 
 
+_IDENTITY = ChatIdentity(bound=False, binding_required=False, storage_user_id="u1", current_thread_id=None)
+
+
 def _channel(tmp_path: Path) -> tuple[ForkFeishuChannel, ChannelStore]:
     store = ChannelStore(path=tmp_path / "store.json")
     channel = ForkFeishuChannel(MessageBus(), config={"app_id": "a", "app_secret": "s", "channel_store": store})
     channel._schedule = MagicMock(side_effect=lambda coroutine, **kwargs: coroutine.close())
     channel._publish_synthetic_command = MagicMock()
-    channel._storage_user_id = MagicMock(return_value="u1")
+    channel._resolve_identity_blocking = MagicMock(return_value=_IDENTITY)
     return channel, store
+
+
+def _ctx(store: ChannelStore, value: dict, *, identity: ChatIdentity = _IDENTITY) -> CardActionContext:
+    return CardActionContext(store=store, chat_id="chat-1", open_id="ou_x", identity=identity, value=value)
 
 
 def _message_event(text: str, *, chat_type: str = "p2p") -> MagicMock:
@@ -800,44 +821,68 @@ class TestFeishuCardActions:
 
         assert response.toast.content == "模型已切换：gpt-x"
         assert store.get_model("feishu", "chat-1") == "gpt-x"
-        channel._card_action_set_model(_CLICKER, store, "chat-1", {"name": "default-model"})
+        channel._resolve_identity_blocking.assert_called_with("chat-1", "ou_x")
+        channel._card_action_set_model(_ctx(store, {"name": "default-model"}))
         assert store.get_model("feishu", "chat-1") is None
-        assert channel._card_action_set_model(_CLICKER, store, "chat-1", {"name": "nope"})["toast"]["type"] == "error"
+        assert channel._card_action_set_model(_ctx(store, {"name": "nope"}))["toast"]["type"] == "error"
 
         unknown = SimpleNamespace(event=SimpleNamespace(action=SimpleNamespace(value={"action": "rm_rf"}), context=SimpleNamespace(open_chat_id="chat-1")))
         assert channel._on_card_action(unknown).toast is None
 
+    def test_card_action_is_gated_on_identity(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(fork_feishu, "available_models", lambda: MODELS)
+        channel, store = _channel(tmp_path)
+        data = SimpleNamespace(event=SimpleNamespace(action=SimpleNamespace(value={"action": "clear_model"}), context=SimpleNamespace(open_chat_id="chat-1"), operator=_CLICKER.operator))
+        store.set_model("feishu", "chat-1", "gpt-x")
+
+        channel._resolve_identity_blocking.return_value = replace(_IDENTITY, binding_required=True)
+        assert channel._on_card_action(data).toast.type == "warning"
+        channel._resolve_identity_blocking.return_value = None
+        assert channel._on_card_action(data).toast.type == "error"
+        assert store.get_model("feishu", "chat-1") == "gpt-x"
+
+        channel._resolve_identity_blocking.return_value = replace(_IDENTITY, bound=True, binding_required=True)
+        assert channel._on_card_action(data).toast.type == "info"
+        assert store.get_model("feishu", "chat-1") is None
+
     def test_session_actions(self, tmp_path):
         channel, store = _channel(tmp_path)
-        for thread_id in ("t1", "t2"):
+        for thread_id, title in (("t1", "会话甲"), ("t2", "会话乙")):
             store.set_thread_id("feishu", "chat-1", thread_id)
             store.add_session("feishu", "chat-1", thread_id)
+            store.set_session_title("feishu", "chat-1", thread_id, title)
 
-        channel._card_action_switch_session(_CLICKER, store, "chat-1", {"thread_id": "t1"})
+        payload = channel._card_action_switch_session(_ctx(store, {"thread_id": "t1"}, identity=replace(_IDENTITY, current_thread_id="t2")))
         assert store.get_thread_id("feishu", "chat-1") == "t1"
+        channel._publish_synthetic_command.assert_called_with("chat-1", "ou_x", "/sessions _gcswitch t1", source=CARD_ACTION_SOURCE)
+        assert "🟢 会话甲**（当前）" in json.dumps(payload["card"]["data"], ensure_ascii=False)
 
-        payload = channel._card_action_delete_session(_CLICKER, store, "chat-1", {"thread_id": "t2"})
+        payload = channel._card_action_delete_session(_ctx(store, {"thread_id": "t1"}, identity=replace(_IDENTITY, current_thread_id="t1")))
         assert payload["toast"]["content"] == "已删除"
-        assert {s["thread_id"] for s in store.list_sessions("feishu", "chat-1")} == {"t1"}
-        channel._publish_synthetic_command.assert_called_with("chat-1", "ou_x", "/sessions _gcdelete t2", source=CARD_ACTION_SOURCE)
+        assert {s["thread_id"] for s in store.list_sessions("feishu", "chat-1")} == {"t2"}
+        channel._publish_synthetic_command.assert_called_with("chat-1", "ou_x", "/sessions _gcdelete t1", source=CARD_ACTION_SOURCE)
+        assert "🟢 会话乙**（当前）" in json.dumps(payload["card"]["data"], ensure_ascii=False)
+        assert channel._card_action_delete_session(_ctx(store, {"thread_id": "t1"}))["toast"]["type"] == "error"
 
-        channel._card_action_view_session(_CLICKER, store, "chat-1", {"thread_id": "t1"})
-        channel._publish_synthetic_command.assert_called_with("chat-1", "ou_x", "/sessions view t1", source=CARD_ACTION_SOURCE)
-        channel._card_action_new_session(_CLICKER, store, "chat-1", {})
+        channel._card_action_view_session(_ctx(store, {"thread_id": "t2"}))
+        channel._publish_synthetic_command.assert_called_with("chat-1", "ou_x", "/sessions view t2", source=CARD_ACTION_SOURCE)
+        channel._card_action_new_session(_ctx(store, {}))
         channel._publish_synthetic_command.assert_called_with("chat-1", "ou_x", "/new", source=CARD_ACTION_SOURCE)
 
     def test_agent_actions_route_through_agent_use(self, tmp_path, monkeypatch):
         personas = [("lead_agent", "通用助手", ""), ("software-team", "software-team", "工程团队")]
-        monkeypatch.setattr(fork_feishu, "list_personas", lambda user_id: personas)
+        seen: list[str | None] = []
+        monkeypatch.setattr(fork_feishu, "list_personas", lambda user_id: seen.append(user_id) or personas)
         channel, store = _channel(tmp_path)
 
-        payload = channel._card_action_set_agent(_CLICKER, store, "chat-1", {"name": "software-team"})
+        payload = channel._card_action_set_agent(_ctx(store, {"name": "software-team"}))
         channel._publish_synthetic_command.assert_called_with("chat-1", "ou_x", "/agent use software-team", source=CARD_ACTION_SOURCE)
         assert "✓ software-team" in [b["text"]["content"] for b in _buttons(payload["card"]["data"])]
-        assert channel._card_action_set_agent(_CLICKER, store, "chat-1", {"name": "ghost"})["toast"]["type"] == "error"
+        assert channel._card_action_set_agent(_ctx(store, {"name": "ghost"}))["toast"]["type"] == "error"
 
-        channel._card_action_clear_agent(_CLICKER, store, "chat-1", {})
+        channel._card_action_clear_agent(_ctx(store, {}))
         channel._publish_synthetic_command.assert_called_with("chat-1", "ou_x", "/agent use lead_agent", source=CARD_ACTION_SOURCE)
+        assert set(seen) == {"u1"}
 
     def test_view_memory_renders_in_card(self, tmp_path, monkeypatch):
         calls: list[tuple] = []
@@ -845,11 +890,88 @@ class TestFeishuCardActions:
         channel, store = _channel(tmp_path)
         store.set_agent("feishu", "chat-1", "software-team")
 
-        payload = channel._card_action_view_memory(_CLICKER, store, "chat-1", {"scope": "persona"})
+        payload = channel._card_action_view_memory(_ctx(store, {"scope": "persona"}, identity=replace(_IDENTITY, bound=True, storage_user_id="admin-1")))
 
-        assert calls == [("persona", "u1", "software-team")]
+        assert calls == [("persona", "admin-1", "software-team")]
         assert "记忆正文" in json.dumps(payload["card"]["data"], ensure_ascii=False)
-        assert channel._card_action_view_memory(_CLICKER, store, "chat-1", {"scope": "bogus"})["toast"]["type"] == "error"
+        assert channel._card_action_view_memory(_ctx(store, {"scope": "bogus"}))["toast"]["type"] == "error"
+
+
+class _FakeFeishuConnections:
+    """绑定库替身：chat-1 里的 ou_x 已绑定到 admin-1。"""
+
+    def __init__(self) -> None:
+        self.threads: dict[tuple[str, str], str] = {("conn-1", "chat-1"): "t-bound"}
+
+    async def find_connection_by_external_identity(self, *, provider: str, external_account_id: str, workspace_id: str | None = None) -> dict | None:
+        if (provider, external_account_id, workspace_id) == ("feishu", "ou_x", "chat-1"):
+            return {"id": "conn-1", "owner_user_id": "admin-1", "workspace_id": "chat-1"}
+        return None
+
+    async def get_thread_id(self, connection_id: str, external_conversation_id: str, external_topic_id: str | None = None) -> str | None:
+        return self.threads.get((connection_id, external_conversation_id))
+
+
+class TestFeishuBoundIdentity:
+    def _bound_channel(self, tmp_path: Path, monkeypatch, *, required: bool = True) -> tuple[ForkFeishuChannel, ChannelStore]:
+        store = ChannelStore(path=tmp_path / "store.json")
+        channel = ForkFeishuChannel(MessageBus(), config={"app_id": "a", "app_secret": "s", "channel_store": store, "connection_repo": _FakeFeishuConnections()})
+        monkeypatch.setattr(channel, "_binding_required", lambda: required)
+        return channel, store
+
+    def test_bound_identity_uses_owner_and_repo_pointer(self, tmp_path, monkeypatch):
+        channel, store = self._bound_channel(tmp_path, monkeypatch)
+        store.set_thread_id("feishu", "chat-1", "t-legacy")
+
+        identity = _run(channel._resolve_identity("chat-1", "ou_x"))
+
+        assert identity == ChatIdentity(bound=True, binding_required=True, storage_user_id="admin-1", current_thread_id="t-bound")
+        assert not identity.blocked
+
+    def test_unbound_user_is_blocked_when_binding_is_required(self, tmp_path, monkeypatch):
+        channel, store = self._bound_channel(tmp_path, monkeypatch)
+        store.set_thread_id("feishu", "chat-1", "t-legacy")
+
+        identity = _run(channel._resolve_identity("chat-1", "ou_stranger"))
+
+        assert identity.blocked and identity.storage_user_id == "ou_stranger" and identity.current_thread_id == "t-legacy"
+        channel._send_interactive = AsyncMock()
+        _run(channel._reply_card_of_kind("om-1", "chat-1", "ou_stranger", "sessions"))
+        assert "/connect" in channel._send_interactive.call_args.args[0]
+
+    def test_unbound_user_passes_when_binding_is_optional(self, tmp_path, monkeypatch):
+        channel, _store = self._bound_channel(tmp_path, monkeypatch, required=False)
+        channel._send_interactive = AsyncMock()
+
+        _run(channel._reply_card_of_kind("om-1", "chat-1", "ou_stranger", "repo"))
+
+        assert channel._send_interactive.call_args.args[0]["header"]["title"]["content"]
+
+    def test_synthetic_command_carries_bound_identity(self, tmp_path, monkeypatch):
+        channel, _store = self._bound_channel(tmp_path, monkeypatch)
+        published: list[InboundMessage] = []
+        channel._publish_inbound_or_drop = AsyncMock(side_effect=lambda inbound: published.append(inbound) or True)
+        inbound = channel._make_inbound(chat_id="chat-1", user_id="ou_x", text="/new", msg_type=InboundMessageType.COMMAND)
+
+        _run(channel._publish_with_identity(inbound))
+
+        assert (published[0].connection_id, published[0].owner_user_id, published[0].workspace_id) == ("conn-1", "admin-1", "chat-1")
+
+    def test_blocking_resolution_runs_on_the_main_loop(self, tmp_path, monkeypatch):
+        channel, _store = self._bound_channel(tmp_path, monkeypatch)
+        assert channel._resolve_identity_blocking("chat-1", "ou_x") is None
+
+        loop = asyncio.new_event_loop()
+        runner = threading.Thread(target=loop.run_forever, daemon=True)
+        runner.start()
+        try:
+            channel._main_loop = loop
+            identity = channel._resolve_identity_blocking("chat-1", "ou_x")
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            runner.join(timeout=5)
+            loop.close()
+        assert identity is not None and identity.storage_user_id == "admin-1"
 
 
 class TestFeishuBotMenu:

@@ -1,10 +1,13 @@
 """ForkFeishuChannel：飞书交互卡片、机器人菜单、卡片回调、进度块与失败通知卡片。
 
 - 裸命令 ``/repo`` ``/agent`` ``/sessions`` ``/memory`` ``/model(s)`` 直接回复交互卡片；带参数时仍走文本命令。
-- 卡片按钮回调（card.action.trigger）：工作目录 / 模型 / 会话切换就地改 store 并原地刷新卡片；
-  人设切换、查看 / 新建会话经总线投递合成命令交给 ForkChannelManager（它持有网关客户端）。
+- 卡片按钮回调（card.action.trigger）：工作目录 / 模型 / 会话登记就地改 store 并原地刷新卡片；
+  人设切换、查看 / 新建会话、网关线程清理与当前会话指针经总线投递合成命令交给 ForkChannelManager
+  （它持有网关客户端与绑定库）。
 - 机器人自定义菜单（application.bot.menu_v6）：event_key 映射到卡片或命令，只带 open_id，
   靠 p2p 消息记录的 open_id → chat_id 映射找回会话。
+- 启用 channel_connections 后，卡片与合成命令按绑定身份解析人设 / 记忆 / 当前会话（与 manager 的运行身份一致）；
+  要求绑定而未绑定时只回绑定提示。
 - 运行卡片正文上方渲染 todos / 子任务进度；子任务失败另发红头通知卡片。
 """
 
@@ -14,6 +17,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Coroutine
+from dataclasses import dataclass, replace
 from typing import Any
 
 from app.channels.commands import strip_leading_mentions
@@ -30,6 +34,7 @@ from app.channels.fork.memory_view import MEMORY_SCOPES, render_memory
 from app.channels.fork.personas import DEFAULT_PERSONA, DEFAULT_PERSONA_LABEL, list_personas, persona_label
 from app.channels.fork.progress import NOTIFICATION_METADATA_KEY, PROGRESS_STEPS_KEY, PROGRESS_TODOS_KEY, render_progress_block
 from app.channels.fork.workdir import list_project_workdirs, normalize_workdir
+from app.channels.manager import _auth_disabled_owner_user_id, _channel_storage_user_id
 from app.channels.message_bus import InboundMessage, InboundMessageType, OutboundMessage
 
 logger = logging.getLogger(__name__)
@@ -37,6 +42,11 @@ logger = logging.getLogger(__name__)
 _BUTTONS_PER_ROW = 4
 _REPO_CARD_MAX_DIRS = 20
 _SESSIONS_CARD_MAX = 15
+
+# 卡片回调在 lark 线程里同步等待主循环解析身份；飞书要求回调在 3 秒内响应
+_IDENTITY_TIMEOUT_SECONDS = 2.0
+_BINDING_REQUIRED_TEXT = "还没有绑定 DeerFlow 账号：请在 DeerFlow 网页的设置里连接飞书，把网页给出的 /connect 连接码发给我，绑定后再使用。"
+_BINDING_REQUIRED_TOAST = "请先绑定 DeerFlow 账号（网页设置里连接飞书）"
 
 # 裸命令 → 卡片类型
 _CARD_COMMANDS = {"/repo": "repo", "/agent": "agent", "/sessions": "sessions", "/memory": "memory", "/models": "model", "/model": "model"}
@@ -71,6 +81,29 @@ _CARD_ACTIONS = frozenset(
         "new_session",
     }
 )
+
+
+@dataclass(frozen=True)
+class ChatIdentity:
+    """卡片读写用的会话身份，归属规则与 manager 的运行身份一致。"""
+
+    bound: bool
+    binding_required: bool
+    storage_user_id: str | None
+    current_thread_id: str | None
+
+    @property
+    def blocked(self) -> bool:
+        return self.binding_required and not self.bound
+
+
+@dataclass(frozen=True)
+class CardActionContext:
+    store: Any
+    chat_id: str
+    open_id: str | None
+    identity: ChatIdentity
+    value: dict[str, Any]
 
 
 # -- 卡片构建（纯函数，发送与回调刷新共用）-------------------------------------
@@ -281,16 +314,57 @@ class ForkFeishuChannel(FeishuChannel):
             msg_type=InboundMessageType.COMMAND,
             metadata={"user_id": open_id, FORK_SOURCE_METADATA_KEY: source},
         )
-        self._schedule(self._publish_inbound_or_drop(inbound), name=f"{source}_command", msg_id=text)
+        self._schedule(self._publish_with_identity(inbound), name=f"{source}_command", msg_id=text)
 
-    def _storage_user_id(self, chat_id: str, open_id: str | None) -> str | None:
-        """与 manager 相同的用户归属解析，保证卡片读到的人设 / 记忆桶与实际运行一致。"""
-        from app.channels.manager import _channel_storage_user_id
+    async def _publish_with_identity(self, inbound: InboundMessage) -> None:
+        """和普通消息一样先附上绑定身份（manager 会按 workspace 复核），再投递到总线。"""
+        await self._publish_inbound_or_drop(await self._attach_connection_identity(inbound))
 
-        return _channel_storage_user_id(InboundMessage(channel_name=self.name, chat_id=chat_id, user_id=open_id or "", text=""))
+    # -- 身份 -----------------------------------------------------------------
 
-    def _build_card(self, kind: str, chat_id: str, open_id: str | None) -> dict[str, Any]:
-        """按会话的 store 状态构建某类卡片（同步 IO，主循环里调用需放进线程池）。"""
+    def _binding_required(self) -> bool:
+        """与 manager 门禁一致：启用 channel_connections 且 require_bound_identity 时要求绑定，免登录模式放行。同步读配置。"""
+        if self._connection_repo is None or _auth_disabled_owner_user_id():
+            return False
+        from deerflow.config.app_config import get_app_config
+
+        connections = getattr(get_app_config(), "channel_connections", None)
+        return bool(getattr(connections, "require_bound_identity", True))
+
+    def _identity_blocking_parts(self, probe: InboundMessage) -> tuple[str | None, bool]:
+        return _channel_storage_user_id(probe), self._binding_required()
+
+    async def _resolve_identity(self, chat_id: str | None, open_id: str | None) -> ChatIdentity:
+        """已绑定：归属 owner，当前会话指针在绑定库；未绑定：归属飞书用户，指针在 ChannelStore。"""
+        probe = self._make_inbound(chat_id=chat_id or "", user_id=open_id or "", text="")
+        if chat_id:
+            probe = await self._attach_connection_identity(probe)
+        bound = bool(probe.connection_id and probe.owner_user_id)
+        if bound and self._connection_repo is not None:
+            current = await self._connection_repo.get_thread_id(probe.connection_id, probe.chat_id, None)
+        else:
+            store = self._channel_store()
+            current = store.get_thread_id(self.name, chat_id) if (store is not None and chat_id) else None
+        storage_user_id, binding_required = await asyncio.to_thread(self._identity_blocking_parts, probe)
+        return ChatIdentity(bound=bound, binding_required=binding_required, storage_user_id=storage_user_id, current_thread_id=current)
+
+    def _resolve_identity_blocking(self, chat_id: str, open_id: str | None) -> ChatIdentity | None:
+        """供 lark 线程里的卡片回调使用：把身份解析投到主循环并限时等待，失败返回 None。"""
+        loop = self._main_loop
+        if loop is None or not loop.is_running():
+            return None
+        future = asyncio.run_coroutine_threadsafe(self._resolve_identity(chat_id, open_id), loop)
+        try:
+            return future.result(timeout=_IDENTITY_TIMEOUT_SECONDS)
+        except Exception:
+            future.cancel()
+            logger.warning("[Feishu] resolving card identity failed: chat_id=%s", chat_id, exc_info=True)
+            return None
+
+    # -- 卡片发送 -------------------------------------------------------------
+
+    def _build_card(self, kind: str, chat_id: str, identity: ChatIdentity) -> dict[str, Any]:
+        """按会话的 store 状态与身份构建某类卡片（同步 IO，主循环里调用需放进线程池）。"""
         store = self._channel_store()
         has_chat = store is not None and bool(chat_id)
         if kind == "repo":
@@ -299,24 +373,28 @@ class ForkFeishuChannel(FeishuChannel):
             return build_repo_card(current, history, list_project_workdirs())
         if kind == "agent":
             current = (store.get_agent(self.name, chat_id) if has_chat else None) or DEFAULT_PERSONA
-            return build_agent_card(current, list_personas(self._storage_user_id(chat_id, open_id)))
+            return build_agent_card(current, list_personas(identity.storage_user_id))
         if kind == "sessions":
             sessions = store.list_sessions(self.name, chat_id) if has_chat else []
-            return build_sessions_card(sessions, store.get_thread_id(self.name, chat_id) if has_chat else None)
+            return build_sessions_card(sessions, identity.current_thread_id)
         if kind == "model":
             models = available_models()
             current = (store.get_model(self.name, chat_id) if has_chat else None) or (models[0][0] if models else None)
             return build_model_card(current, models)
         return build_memory_card()
 
+    async def _card_or_binding_hint(self, kind: str, chat_id: str | None, open_id: str | None) -> dict[str, Any] | str:
+        identity = await self._resolve_identity(chat_id, open_id)
+        if identity.blocked:
+            return self._build_card_content(_BINDING_REQUIRED_TEXT)
+        return await asyncio.to_thread(self._build_card, kind, chat_id or "", identity)
+
     async def _reply_card_of_kind(self, msg_id: str, chat_id: str, open_id: str | None, kind: str) -> None:
-        card = await asyncio.to_thread(self._build_card, kind, chat_id, open_id)
-        await self._send_interactive(card, reply_to=msg_id)
+        await self._send_interactive(await self._card_or_binding_hint(kind, chat_id, open_id), reply_to=msg_id)
         logger.info("[Feishu] %s card sent: chat_id=%s", kind, chat_id)
 
     async def _create_card_of_kind(self, chat_id: str | None, open_id: str | None, kind: str) -> None:
-        card = await asyncio.to_thread(self._build_card, kind, chat_id or "", open_id)
-        await self._send_interactive(card, chat_id=chat_id, open_id=open_id)
+        await self._send_interactive(await self._card_or_binding_hint(kind, chat_id, open_id), chat_id=chat_id, open_id=open_id)
         logger.info("[Feishu] %s card created: chat_id=%s open_id=%s", kind, chat_id, open_id)
 
     # -- 入站消息：记录 open_id 映射，裸命令回卡片 ---------------------------
@@ -414,7 +492,14 @@ class ForkFeishuChannel(FeishuChannel):
             store = self._channel_store()
             if not chat_id or store is None or action not in _CARD_ACTIONS:
                 return P2CardActionTriggerResponse({})
-            payload = getattr(self, f"_card_action_{action}")(event, store, chat_id, value)
+            open_id = self._card_action_open_id(event)
+            identity = self._resolve_identity_blocking(chat_id, open_id)
+            if identity is None:
+                return P2CardActionTriggerResponse({"toast": _toast("error", "处理失败，请重试")})
+            if identity.blocked:
+                return P2CardActionTriggerResponse({"toast": _toast("warning", _BINDING_REQUIRED_TOAST)})
+            context = CardActionContext(store=store, chat_id=chat_id, open_id=open_id, identity=identity, value=value)
+            payload = getattr(self, f"_card_action_{action}")(context)
             logger.info("[Feishu] card action %s handled: chat_id=%s", action, chat_id)
             return P2CardActionTriggerResponse(payload)
         except Exception:
@@ -425,83 +510,88 @@ class ForkFeishuChannel(FeishuChannel):
     def _refresh(toast: dict[str, str], card: dict[str, Any]) -> dict[str, Any]:
         return {"toast": toast, "card": {"type": "raw", "data": card}}
 
-    def _card_action_set_workdir(self, event, store, chat_id: str, value: dict) -> dict[str, Any]:
-        path = value.get("path")
+    def _card_action_set_workdir(self, ctx: CardActionContext) -> dict[str, Any]:
+        path = ctx.value.get("path")
         workdir = normalize_workdir(path) if isinstance(path, str) else None
         if workdir is None:
             return {"toast": _toast("error", "无效的目录")}
-        store.set_workdir(self.name, chat_id, workdir)
-        return self._refresh(_toast("success", f"工作目录已切换：{workdir.rsplit('/', 1)[-1]}"), self._build_card("repo", chat_id, None))
+        ctx.store.set_workdir(self.name, ctx.chat_id, workdir)
+        return self._refresh(_toast("success", f"工作目录已切换：{workdir.rsplit('/', 1)[-1]}"), self._build_card("repo", ctx.chat_id, ctx.identity))
 
-    def _card_action_clear_workdir(self, event, store, chat_id: str, value: dict) -> dict[str, Any]:
-        store.clear_workdir(self.name, chat_id)
-        return self._refresh(_toast("info", "已清除工作目录设置"), self._build_card("repo", chat_id, None))
+    def _card_action_clear_workdir(self, ctx: CardActionContext) -> dict[str, Any]:
+        ctx.store.clear_workdir(self.name, ctx.chat_id)
+        return self._refresh(_toast("info", "已清除工作目录设置"), self._build_card("repo", ctx.chat_id, ctx.identity))
 
-    def _card_action_set_model(self, event, store, chat_id: str, value: dict) -> dict[str, Any]:
+    def _card_action_set_model(self, ctx: CardActionContext) -> dict[str, Any]:
         models = available_models()
-        name = value.get("name")
+        name = ctx.value.get("name")
         if not isinstance(name, str) or name not in {model_name for model_name, _ in models}:
             return {"toast": _toast("error", "无效的模型")}
         if name == models[0][0]:
-            store.clear_model(self.name, chat_id)
+            ctx.store.clear_model(self.name, ctx.chat_id)
         else:
-            store.set_model(self.name, chat_id, name)
-        return self._refresh(_toast("success", f"模型已切换：{name}"), self._build_card("model", chat_id, None))
+            ctx.store.set_model(self.name, ctx.chat_id, name)
+        return self._refresh(_toast("success", f"模型已切换：{name}"), self._build_card("model", ctx.chat_id, ctx.identity))
 
-    def _card_action_clear_model(self, event, store, chat_id: str, value: dict) -> dict[str, Any]:
-        store.clear_model(self.name, chat_id)
+    def _card_action_clear_model(self, ctx: CardActionContext) -> dict[str, Any]:
+        ctx.store.clear_model(self.name, ctx.chat_id)
         models = available_models()
-        return self._refresh(_toast("info", f"已恢复默认模型：{models[0][0] if models else '默认'}"), self._build_card("model", chat_id, None))
+        return self._refresh(_toast("info", f"已恢复默认模型：{models[0][0] if models else '默认'}"), self._build_card("model", ctx.chat_id, ctx.identity))
 
-    def _card_action_set_agent(self, event, store, chat_id: str, value: dict) -> dict[str, Any]:
-        open_id = self._card_action_open_id(event)
-        personas = list_personas(self._storage_user_id(chat_id, open_id))
-        name = value.get("name")
+    def _card_action_set_agent(self, ctx: CardActionContext) -> dict[str, Any]:
+        personas = list_personas(ctx.identity.storage_user_id)
+        name = ctx.value.get("name")
         if not isinstance(name, str) or name not in {persona_name for persona_name, _, _ in personas}:
             return {"toast": _toast("error", "无效的人设")}
         # 上游把人设钉在线程上，切换 = 以该人设开启新会话（由 manager 创建线程并回复确认）
-        self._publish_synthetic_command(chat_id, open_id, f"/agent use {name}", source=CARD_ACTION_SOURCE)
+        self._publish_synthetic_command(ctx.chat_id, ctx.open_id, f"/agent use {name}", source=CARD_ACTION_SOURCE)
         return self._refresh(_toast("info", f"正在切换到「{persona_label(name)}」并开启新会话…"), build_agent_card(name, personas))
 
-    def _card_action_clear_agent(self, event, store, chat_id: str, value: dict) -> dict[str, Any]:
-        open_id = self._card_action_open_id(event)
-        self._publish_synthetic_command(chat_id, open_id, f"/agent use {DEFAULT_PERSONA}", source=CARD_ACTION_SOURCE)
-        personas = list_personas(self._storage_user_id(chat_id, open_id))
+    def _card_action_clear_agent(self, ctx: CardActionContext) -> dict[str, Any]:
+        self._publish_synthetic_command(ctx.chat_id, ctx.open_id, f"/agent use {DEFAULT_PERSONA}", source=CARD_ACTION_SOURCE)
+        personas = list_personas(ctx.identity.storage_user_id)
         return self._refresh(_toast("info", f"正在恢复「{DEFAULT_PERSONA_LABEL}」并开启新会话…"), build_agent_card(DEFAULT_PERSONA, personas))
 
-    def _card_action_view_memory(self, event, store, chat_id: str, value: dict) -> dict[str, Any]:
-        scope = value.get("scope")
+    def _card_action_view_memory(self, ctx: CardActionContext) -> dict[str, Any]:
+        scope = ctx.value.get("scope")
         if scope not in MEMORY_SCOPES:
             return {"toast": _toast("error", "无效的记忆范围")}
-        user_id = self._storage_user_id(chat_id, self._card_action_open_id(event))
-        body = render_memory(scope, user_id=user_id, persona=store.get_agent(self.name, chat_id))
+        body = render_memory(scope, user_id=ctx.identity.storage_user_id, persona=ctx.store.get_agent(self.name, ctx.chat_id))
         return self._refresh(_toast("info", _MEMORY_SCOPE_LABELS[scope]), build_memory_card(scope, body))
 
-    def _card_action_switch_session(self, event, store, chat_id: str, value: dict) -> dict[str, Any]:
-        thread_id = value.get("thread_id")
-        snapshot = store.switch_session(self.name, chat_id, thread_id) if isinstance(thread_id, str) and thread_id else None
+    def _card_action_switch_session(self, ctx: CardActionContext) -> dict[str, Any]:
+        thread_id = ctx.value.get("thread_id")
+        snapshot = ctx.store.switch_session(self.name, ctx.chat_id, thread_id) if isinstance(thread_id, str) and thread_id else None
         if snapshot is None:
             return {"toast": _toast("error", "会话不存在")}
-        return self._refresh(_toast("success", f"已切换：{session_display_title(snapshot)}"), self._build_card("sessions", chat_id, None))
+        # 会话设置已在本地恢复；当前会话指针（已绑定时在绑定库）交给 manager 写
+        self._publish_synthetic_command(ctx.chat_id, ctx.open_id, f"/sessions _gcswitch {thread_id}", source=CARD_ACTION_SOURCE)
+        card = self._build_card("sessions", ctx.chat_id, replace(ctx.identity, current_thread_id=thread_id))
+        return self._refresh(_toast("success", f"已切换：{session_display_title(snapshot)}"), card)
 
-    def _card_action_view_session(self, event, store, chat_id: str, value: dict) -> dict[str, Any]:
-        thread_id = value.get("thread_id")
+    def _card_action_view_session(self, ctx: CardActionContext) -> dict[str, Any]:
+        thread_id = ctx.value.get("thread_id")
         if not isinstance(thread_id, str) or not thread_id:
             return {"toast": _toast("error", "无效的会话")}
-        self._publish_synthetic_command(chat_id, self._card_action_open_id(event), f"/sessions view {thread_id}", source=CARD_ACTION_SOURCE)
+        self._publish_synthetic_command(ctx.chat_id, ctx.open_id, f"/sessions view {thread_id}", source=CARD_ACTION_SOURCE)
         return {"toast": _toast("info", "正在查看会话…")}
 
-    def _card_action_delete_session(self, event, store, chat_id: str, value: dict) -> dict[str, Any]:
-        thread_id = value.get("thread_id")
+    def _card_action_delete_session(self, ctx: CardActionContext) -> dict[str, Any]:
+        thread_id = ctx.value.get("thread_id")
         if not isinstance(thread_id, str) or not thread_id:
             return {"toast": _toast("error", "无效的会话")}
-        # 本地即时移除并刷新卡片；网关线程交给 manager 静默清理（它持有网关客户端）
-        removed = bool(store.remove_session(self.name, chat_id, thread_id).get("removed"))
-        if removed:
-            self._publish_synthetic_command(chat_id, self._card_action_open_id(event), f"/sessions _gcdelete {thread_id}", source=CARD_ACTION_SOURCE)
-        toast = _toast("success", "已删除") if removed else _toast("error", "会话不存在")
-        return self._refresh(toast, self._build_card("sessions", chat_id, None))
+        # 本地即时移除并刷新卡片；网关线程与当前会话指针交给 manager（它持有网关客户端与绑定库）
+        if not ctx.store.remove_session(self.name, ctx.chat_id, thread_id).get("removed"):
+            return self._refresh(_toast("error", "会话不存在"), self._build_card("sessions", ctx.chat_id, ctx.identity))
+        self._publish_synthetic_command(ctx.chat_id, ctx.open_id, f"/sessions _gcdelete {thread_id}", source=CARD_ACTION_SOURCE)
+        current = ctx.identity.current_thread_id
+        if current == thread_id:
+            # 与 manager 一致：删掉当前会话后切到剩余最近的会话
+            remaining = ctx.store.list_sessions(self.name, ctx.chat_id)
+            current = remaining[0]["thread_id"] if remaining else None
+        card = self._build_card("sessions", ctx.chat_id, replace(ctx.identity, current_thread_id=current))
+        return self._refresh(_toast("success", "已删除"), card)
 
-    def _card_action_new_session(self, event, store, chat_id: str, value: dict) -> dict[str, Any]:
-        self._publish_synthetic_command(chat_id, self._card_action_open_id(event), "/new", source=CARD_ACTION_SOURCE)
+    def _card_action_new_session(self, ctx: CardActionContext) -> dict[str, Any]:
+        self._publish_synthetic_command(ctx.chat_id, ctx.open_id, "/new", source=CARD_ACTION_SOURCE)
         return {"toast": _toast("info", "正在新建会话…")}

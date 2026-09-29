@@ -500,16 +500,23 @@ class ForkChannelManager(ChannelManager):
         if sub == "new":
             await self._create_thread(self._get_client(), msg)
             return "已开启新会话。直接发消息即可开始。"
-        if sub == "_gcdelete":
-            # 卡片删除已在本地移除登记并刷新卡片：这里清理网关线程，删的若是当前会话再修正指针；不回消息。
+        if sub in ("_gcswitch", "_gcdelete"):
+            # 卡片回调已在本地改好登记并刷新卡片，这里补做需要网关客户端 / 绑定库的部分，不回消息；
             # 只接受卡片回调投递的命令
             if rest and msg.metadata.get(FORK_SOURCE_METADATA_KEY) == CARD_ACTION_SOURCE:
-                was_current = rest == await self._lookup_thread_id(msg)
-                await self._delete_gateway_thread(msg, rest)
-                if was_current:
-                    await self._repoint_after_delete(msg)
+                await (self._card_switch_session(msg, rest) if sub == "_gcswitch" else self._card_delete_session(msg, rest))
             return None
         return f"未知子命令：{sub}\n{_SESSIONS_HINT}"
+
+    async def _card_switch_session(self, msg: InboundMessage, thread_id: str) -> None:
+        if self.store.switch_session(msg.channel_name, msg.chat_id, thread_id) is not None:
+            await self._store_thread_id(msg, thread_id)
+
+    async def _card_delete_session(self, msg: InboundMessage, thread_id: str) -> None:
+        was_current = thread_id == await self._lookup_thread_id(msg)
+        await self._delete_gateway_thread(msg, thread_id)
+        if was_current:
+            await self._repoint_after_delete(msg)
 
     def _session_persona_label(self, session: Mapping[str, Any]) -> str:
         agent = session.get("agent")
