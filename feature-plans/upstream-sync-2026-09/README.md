@@ -6,7 +6,7 @@ fork `WillTheFabulous/deer-flow` 原基线是上游 2026-06-09（PR #3460 附近
 本次**以上游 `main`（PR #5990，`857eac45`）为基线重建**，只移植仍需要的 fork 功能，并把 fork 代码集中隔离，方便以后定期同步。
 
 - 旧状态：分支 `legacy/fork-2026-06`、tag `fork-legacy-20260928`（含当时未提交的 WIP），均已推到 origin。
-- 新状态：分支 `sync/upstream-2026-09`（worktree `/work/deerflow/deer-flow-sync`），确认后重置为 `main`。
+- 新状态：`main` 已基于上游重建。worktree `/work/deerflow/deer-flow-sync` 在主目录切换完成前保留。
 
 ## 目标与范围
 
@@ -33,8 +33,8 @@ fork `WillTheFabulous/deer-flow` 原基线是上游 2026-06-09（PR #3460 附近
 ### fork 专属文件（上游没有，直接保留）
 
 - `backend/app/channels/fork/`：`store_ext.py`、`workdir.py`、`personas.py`、`memory_view.py`、`progress.py`、`manager.py`（`ForkChannelManager`）、`feishu.py`（`ForkFeishuChannel`）
-- `backend/tests/test_channels_fork.py`、`backend/tests/test_subagent_thinking_config.py`
-- `docker/docker-compose.cursor-agent.yaml`、`docker/cursor-agent-setup.sh`、`scripts/fork/rebuild-dev.sh`（国内网络重建 dev 栈）
+- `backend/tests/test_channels_fork.py`、`backend/tests/test_subagent_thinking_config.py`、`backend/tests/test_fork_migrate_default_owner.py`
+- `docker/docker-compose.cursor-agent.yaml`、`docker/cursor-agent-setup.sh`、`scripts/fork/rebuild-dev.sh`（国内网络重建 dev 栈）、`scripts/fork/migrate_default_owner.py`（`default` 数据归到 Web 账号）
 - `deploy/fork/config.yaml`（被追踪的部署配置；根目录 `config.yaml` 是本机软链，上游 `.gitignore` 忽略）
 - `.cursor/`、`memory-bank/`、`feature-plans/`、`DEPLOYMENT.md`、`.github/CODEOWNERS`、`.github/workflows/memory-bank-guard.yml`、`scripts/memory_bank_budget.sh`、`scripts/hooks/`、`scripts/ci/`
 
@@ -62,7 +62,7 @@ fork `WillTheFabulous/deer-flow` 原基线是上游 2026-06-09（PR #3460 附近
 
 - 上游为 p2p 每条回复记录话题映射，`store.json` 会缓慢增长（旧 fork 跳过了）。
 - 切换人设会开启新会话（旧 fork 是同一会话里直接换）。
-- 飞书卡片命令、菜单不经过账号绑定检查（与旧 fork 一致；启用 `require_bound_identity` 前需补）。
+- 启用 `require_bound_identity` 后，未绑定用户的卡片、菜单和消息都会被拦住；合成命令会附上绑定身份。绑定后第一次查会话会尝试沿用升级前的 ChannelStore 指针。
 - 群聊话题下 `/sessions` 是 chat 级登记。
 - 没有移植 Frontend-Layout / Test-Runs 规则（mooya 专属），改为 `Module-Guides` 规则指向上游文档。
 

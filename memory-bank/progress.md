@@ -1,7 +1,14 @@
 # Progress
-[Last Updated: 2026-09-29]
+[Last Updated: 2026-10-07]
 
 ## 已完成里程碑
+
+### 2026-10-07 飞书账号绑定与旧数据迁移演练
+
+- `/sessions` 当前指针改走绑定库；删除当前会话会改指向或新开；绑定后第一次查找沿用旧指针。飞书卡片按绑定身份构建，未绑定只回提示，合成命令附身份。
+- `scripts/fork/migrate_default_owner.py`：预览默认，`--apply` 先备份再改库、复制线程目录与 `memory.json`（不覆盖）。
+- 验证：fork 与渠道相关测试通过；全量单测 21,223 通过 / 3 个 `.xhtml` 环境性失败。副本上演练：旧库升到 `0026`，管理员可见 7 个旧线程和 7 条记忆。线上数据未动。
+- 详情：`feature-plans/upstream-sync-2026-09/`。切换、`/setup`、正式迁移待确认。
 
 ### 2026-09-29 上游同步重建（sync/upstream-2026-09）
 
@@ -36,8 +43,8 @@
 
 ## 待办 TODO
 
-- 切换主工作目录到新 `main` 并重建 dev 容器（步骤与风险见 `feature-plans/upstream-sync-2026-09/progress.md`）。
-- 飞书手测清单（同上）。
+- 确认后切换主目录到新 `main`、重建 dev 容器，再 `/setup` 与 `migrate_default_owner.py`（见 `feature-plans/upstream-sync-2026-09/progress.md`）。
+- 绑定后的飞书手测清单（同上）。
 - 飞书开放平台：回调订阅为长连接方式；事件订阅含 `application.bot.menu_v6`；菜单项 event_key 按 `productContext.md` 配置。
 - 恢复 clash 代理，或确认 cursor-agent 直连可接受。
 - `/setup` 建管理员（如尚未）；微信拿到真实 iLink 凭证后启用。
@@ -46,6 +53,6 @@
 ## 已知问题 / 风险
 
 - 上游会为 p2p 的每条回复记录话题映射，`store.json` 会随消息量缓慢增长（旧 fork 曾跳过）。
-- 飞书卡片命令、菜单不经过 manager 的账号绑定检查；启用 `require_bound_identity` 前需补上。
+- 启用绑定后，未在 Web 连接飞书的用户无法使用机器人，直到单聊发送 `/connect`。
 - 群聊话题下 `/sessions` 仍是 chat 级登记。
 - 大跨度同步后的第一次推送会触发上游全套 CI：agent-guidance（上游 `middlewares/AGENTS.md` 继承链超限）、Skill Review、E2E 书签插件失败与 fork 无关；单测 / Blocking IO 失败已通过把部署配置移到 `deploy/fork/` 解决。

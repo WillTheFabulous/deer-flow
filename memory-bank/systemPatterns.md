@@ -1,15 +1,15 @@
 # System Patterns
-[Last Updated: 2026-09-29]
+[Last Updated: 2026-10-07]
 
 ## 1. 技术架构与运行拓扑
 
 - 飞书 WS 长连接 → gateway 进程内 `ChannelService` → `ForkChannelManager` → Gateway 的 LangGraph 兼容 API（nginx `/api/langgraph/*` → `/api/*`）→ `lead_agent` → `task` 工具 → 角色子代理 → `bash` → `cursor-agent`。
 - 渠道地址：Docker 内由 compose 注入 `DEER_FLOW_CHANNELS_LANGGRAPH_URL` / `DEER_FLOW_CHANNELS_GATEWAY_URL`，`config.yaml` 不写 `langgraph_url` / `gateway_url`。
-- 上游把 IM 请求的 run 身份解析为 `_channel_storage_user_id(msg)`：未绑定账号时是 `safe(open_id)`，它同时决定文件桶和记忆桶。
+- 上游把 IM 请求的 run 身份解析为 `_channel_storage_user_id(msg)`：已绑定是 Web 账号 id，未绑定是 `safe(open_id)`。它同时决定文件桶和记忆桶。本部署 `channel_connections.require_bound_identity: true`，未绑定请求在 manager 入口被拒。
 
 ## 2. 目录结构与 fork 挂接点
 
-- fork 专属代码：`backend/app/channels/fork/`（`store_ext` / `workdir` / `personas` / `memory_view` / `progress` / `manager` / `feishu`）、`docker/docker-compose.cursor-agent.yaml`、`docker/cursor-agent-setup.sh`、`scripts/fork/rebuild-dev.sh`；fork 测试 `backend/tests/test_channels_fork.py`、`backend/tests/test_subagent_thinking_config.py`。
+- fork 专属代码：`backend/app/channels/fork/`（`store_ext` / `workdir` / `personas` / `memory_view` / `progress` / `manager` / `feishu`）、`docker/docker-compose.cursor-agent.yaml`、`docker/cursor-agent-setup.sh`、`scripts/fork/rebuild-dev.sh`、`scripts/fork/migrate_default_owner.py`；fork 测试 `backend/tests/test_channels_fork.py`、`test_subagent_thinking_config.py`、`test_fork_migrate_default_owner.py`。
 - 上游文件里的挂接点（同步时逐条复核，完整清单见 `feature-plans/upstream-sync-2026-09/README.md`）：
   - `app/channels/store.py`：继承 `ChannelStoreExtensionsMixin`；`get_thread_id` 用 `entry.get`；`set_thread_id` 合并写。
   - `app/channels/manager.py`：`_NullStreamObserver` + `_make_stream_observer()`，`_handle_streaming_chat` 里创建观察者 1 处 + 调用 5 处。
@@ -22,13 +22,12 @@
 ## 3. IM 渠道模式
 
 - **store 扩展字段**（按 `channel:chat_id`，不分 topic）：`workdir` / `workdir_history`（MRU 8）/ `agent`（人设展示缓存）/ `model` / `sessions{thread_id: {title, agent, model, workdir, created_at, updated_at}}`（上限 50）；`channel:user:<open_id>` → `chat_id`。所有读写持 `_lock`。
-- **人设**：真正生效的是线程钉住的 agent（上游 `_thread_agent_names` + 线程 metadata `channel_agent_name`）。fork：`/agent <名>` 改写为 `/agent use <名>`；`_create_thread` 未指定 agent 时沿用 store 里的人设（校验失败则回落默认）；`_load_thread_agent` 对未钉住的当前线程回落 store 人设（兼容旧 fork 线程）。
+- **人设**：真正生效的是线程钉住的 agent（上游 `_thread_agent_names` + 线程 metadata `channel_agent_name`）。fork：`/agent <名>` 改写为 `/agent use <名>`；`_create_thread` 未指定 agent 时沿用 store 里的人设（校验失败则回落默认）；未钉住的线程回落该会话存的人设。
 - **模型**：`store.model` 仅在仍在 `config.models` 中时注入 `run_context["model_name"]`（网关按白名单校验，不在白名单会直接 400）。
 - **工作目录**：消息前缀 `[当前工作目录：X。未明确指定其他路径时…]`；`normalize_workdir` 只接受 `sandbox.mounts` 各根的直接子目录，拒绝穿越。
-- **会话**：新线程在 `_create_thread` 里登记；切换恢复 agent / model / workdir；删除 = 网关 `threads.delete` + 移除登记。卡片删除先本地移除，再发 `/sessions _gcdelete <id>`，manager 只接受 metadata `fork_source=card_action` 的该命令。
-- **流式进度**：`StreamProgressObserver` 追加 `custom` 流模式，把 todos / 子任务步骤写进 outbound metadata（`fork_progress_todos` / `fork_progress_steps`）；子任务首次失败发 `fork_notification` 通知（仅飞书）；run 结束记录会话标题；`LiveRunRegistry` 供 `/status`（含子任务累计 token）。
-- **飞书**：`ForkFeishuChannel` 在上游 `_on_message` 之前拦截裸卡片命令，并记录 p2p 的 open_id 映射；卡片回调在 lark 线程同步执行、必须尽快返回；需要网关的动作经 `_submit_threadsafe_coroutine(_publish_inbound_or_drop(...))` 投递合成命令。
-- 卡片命令、菜单不经过 manager 的账号绑定检查（本部署 `require_bound_identity` 为 false）。
+- **会话**：登记在 ChannelStore；「当前会话」指针走 `_lookup_thread_id` / `_store_thread_id`（已绑定在连接库，未绑定在 store）。删除当前会话后切到剩余最近的一条，没有则新开。绑定后第一次查找会尝试沿用 store 里的旧指针（owner 读得到才写入连接库，每个会话只试一次）。卡片切换发 `/sessions _gcswitch`，卡片删除先本地移除再发 `_gcdelete`；两者都只接受 `fork_source=card_action`。
+- **流式进度**：`StreamProgressObserver` 追加 `custom` 流模式；只有 `values` / `custom` 重算进度，消息块只刷新活动时间。todos / 子任务写入 outbound metadata（`fork_progress_todos` / `fork_progress_steps`）；子任务首次失败发 `fork_notification`（仅飞书）。`ForkChannelManager._handle_streaming_chat` 退出时 `close()`，避免最终回复发送失败后快照一直停在 running。`LiveRunRegistry` 供 `/status`（含子任务累计 token）。
+- **飞书**：裸卡片命令在上游 `_on_message` 之前拦截，并记录 p2p 的 open_id 映射。卡片与菜单按 `ChatIdentity` 构建（归属 owner、当前线程读连接库）；要求绑定且未绑定时只回绑定提示。合成命令先 `_attach_connection_identity` 再投递。卡片回调在 lark 线程里同步执行，身份解析投到主循环并限时 2 秒。`/repo` 的目录扫描在线程池里做。
 
 ## 4. 子代理与角色流水线
 

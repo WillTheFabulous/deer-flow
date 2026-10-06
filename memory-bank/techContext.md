@@ -1,11 +1,11 @@
 # Tech Context
-[Last Updated: 2026-09-29]
+[Last Updated: 2026-10-07]
 
 ## 技术栈
 
 - Backend：Python 3.12，FastAPI Gateway（内嵌 agent runtime，端口 8001），LangGraph；`uv` 管依赖（`backend/uv.lock`，workspace 成员 harness + extension-api）。
 - Frontend：Next.js（pnpm，dev 端口 3000）。反代 nginx（2026）。dev 栈另有 Redis（stream bridge）。
-- 数据：SQLite（`backend/.deer-flow/data`）；`run_events` 落库；渠道状态在 `backend/.deer-flow/channels/store.json`。
+- 数据：SQLite（`backend/.deer-flow/data`）；`run_events` 落库；渠道状态在 `backend/.deer-flow/channels/store.json`。旧版 `user_id=default` 的线程与记忆用 `scripts/fork/migrate_default_owner.py` 归到 Web 账号（gateway 停止时跑，先备份）。
 
 ## Docker（dev 栈，项目名 deer-flow-dev）
 

@@ -129,8 +129,21 @@ fork 没有新增 Gateway 路由。对外只有 nginx 入口（`/` 前端、`/ap
   2. `make docker-stop`；
   3. `git switch main`（主目录 `/work/deerflow/deer-flow`）；
   4. `bash scripts/fork/rebuild-dev.sh --reset-venv`；
-  5. `logs/gateway.log` 出现飞书连接成功、Web 可访问后，按 `feature-plans/upstream-sync-2026-09/progress.md` 的手测清单验证。
-- 回滚：`git switch legacy/fork-2026-06`，重新构建旧镜像；配置与数据备份在 `/work/deerflow/backup-20260928/`。
+  5. Web `/setup` 建管理员后停 gateway，跑下面的迁移，再启动；
+  6. 飞书单聊发网页给出的 `/connect <连接码>`，再按 feature progress 的手测清单验证。
+
+### 旧数据迁移
+
+旧版线程、run、记忆都在 `user_id=default` 下。管理员建好、**gateway 停止**后：
+
+```bash
+python3 scripts/fork/migrate_default_owner.py <管理员邮箱> --data-dir backend/.deer-flow
+python3 scripts/fork/migrate_default_owner.py <管理员邮箱> --data-dir backend/.deer-flow --apply
+```
+
+先预览。`--apply` 会用 SQLite backup 把库备份到 `backend/.deer-flow/backups/`，再把带 `user_id` 列的业务表里 `default` 行改到该账号（跳过 users、偏好、访问令牌和 `channel_*`），并复制 `users/default` 的线程目录、人设目录和 `memory.json`（已存在的不覆盖）。库被占用时直接失败，不改文件。
+
+- 回滚：`git switch legacy/fork-2026-06`，重新构建旧镜像；配置与数据备份在 `/work/deerflow/backup-20260928/`。迁移后的库可从 `backups/migrate-default-*/deerflow.db` 换回。
 
 ## 宿主机与网络
 
@@ -146,5 +159,5 @@ fork 没有新增 Gateway 路由。对外只有 nginx 入口（`/` 前端、`/ap
 - `allow_host_bash: true`：LocalSandbox 不是隔离边界，只适合单用户可信部署。
 - `BIND_HOST=0.0.0.0` 会把入口暴露到局域网：先在 `/setup` 建好管理员。
 - `/prod_data` 以读写方式挂进 gateway，agent 可以修改其中的文件（包括其他项目）。
-- 飞书卡片命令、菜单不经过账号绑定检查；启用 `channel_connections` / `require_bound_identity` 前需要补上。
+- 飞书已启用 `channel_connections` 且 `require_bound_identity`：未绑定用户的消息、卡片和菜单只收到绑定提示。在 Web 设置里连接飞书，把 `/connect` 连接码发到单聊后才可用。
 - 密钥只放 `.env`；`deploy/fork/config.yaml`、memory-bank、feature-plans、本文件都进 git，禁止写入真实密钥（CI 的 `memory-bank-guard` 会跑 gitleaks）。
