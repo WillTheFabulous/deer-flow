@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "P03 购买吸引力假设 result",
+  "type": "object",
+  "required": ["hypotheses"],
+  "properties": {
+    "hypotheses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["hypothesis_id", "feature_refs", "possible_effect", "test_axis", "status"],
+        "properties": {
+          "hypothesis_id": {"type": "string"},
+          "feature_refs": {"type": "array", "items": {"type": "string"}},
+          "possible_effect": {"type": "string"},
+          "evidence_refs": {"type": "array"},
+          "alternative_explanations": {"type": "array"},
+          "missing_evidence": {"type": "array"},
+          "test_axis": {"type": "string"},
+          "status": {"enum": ["unvalidated", "supported", "refuted"]}
+        }
+      }
+    }
+  }
+}

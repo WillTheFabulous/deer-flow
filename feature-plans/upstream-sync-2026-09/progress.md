@@ -1,9 +1,19 @@
 # 上游同步重建 · 进度
-[Last Updated: 2026-10-07]
+[Last Updated: 2026-10-10]
 
 ## 当前阶段
 
-绑定适配、迁移脚本与离线演练已完成，待推送后做切换。**主目录切换、容器重建、`/setup` 与数据迁移尚未执行**（需确认；线上仍跑 `legacy/fork-2026-06`）。
+**2026-10-08 主目录已切到 `main`（`1f23e415`）并重建 dev 容器**；**2026-10-09 管理员已建（`weixiaothink@outlook.com`）并完成 `default` 数据迁移**（更新 12 行、复制 7 项，备份 `backend/.deer-flow/backups/migrate-default-20261009-183312/`）；**同日飞书应用换到用户新企业（`cli_aa4264e6a978dcba`），`/connect` 已绑定到管理员**。剩余：手测清单。
+
+### 2026-10-08 切换记录
+
+- 自建 `local-uv:0.11.1`；先在 worktree 里预构建 gateway / frontend 镜像预热缓存（旧栈照常运行），再 `make docker-stop` → `git switch main` → `rebuild-dev.sh --reset-venv`，飞书离线约 3 分钟。
+- worktree `deer-flow-sync` 原本占着 `main`，主目录 `git switch main` 会失败：先 `git -C deer-flow-sync switch --detach`。
+- `.env` 删除 `UV_INDEX_URL`（切换前备份 `/work/deerflow/backup-20260928/root.env.before-main-switch-20261008`）；新建 `docker/.env`：`BIND_HOST=0.0.0.0`、`DEER_FLOW_DEV_ALLOWED_ORIGINS=172.16.15.161,100.75.49.57,120.26.127.66`。
+- `extensions_config.json`（本机，不入库）去掉示例占位的 `mcpInterceptors: my_package.mcp.auth`（启动时导入失败刷报错）。
+- ⚠️ `/setup` 未完成前 `needs_setup: true`：能访问 2026 端口的人都可能抢先建管理员，尽快完成。2026-10-09 已关闭自助注册（`auth.local.allow_registration: false`）。
+- 2026-10-09 公网访问 2026 不通：重建让 deer-flow-dev 网桥变成 `br-aa753be73776`，不在 mihomo TUN 的 `exclude-interface` 里，容器回包被导进 TUN。已更新 `/root/clashctl/resources/mixin.yaml`，并补 `ip rule add pref 9000 iif br-aa753be73776 goto 9010`；公网访问已验证。
+- 2026-10-09 飞书换企业：新企业建自建应用 → `.env` 换 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` → `--force-recreate gateway`（`docker restart` 不重读 `.env`）→ 开放平台保存长连接事件 / 回调（要求长连接在线）→ 发布版本（机器人 `activate_status` 0→2）→ `/connect`。绑定前发的消息被拒并只回绑定提示（日志 `rejecting unbound channel message`）。
 
 ## 已完成
 
@@ -28,12 +38,9 @@
 
 ## 下一步
 
-1. 推送 `main`（旧状态由 `legacy/fork-2026-06` 与 tag `fork-legacy-20260928` 保留）。worktree 在切换完成后再删。
-2. **切换与重建**（需确认；飞书会离线几分钟）：按 `DEPLOYMENT.md`「上游同步与切换」。
-   - 从 `.env` 删除 `UV_INDEX_URL`；`docker/.env` 写 `BIND_HOST=0.0.0.0` 与 `DEER_FLOW_DEV_ALLOWED_ORIGINS`；
-   - 自建 `local-uv:0.11.1`；`make docker-stop` → 主目录 `git switch main` → 软链 → `bash scripts/fork/rebuild-dev.sh --reset-venv`。
-3. **建号与迁移**（需确认，gateway 停着时跑迁移）：Web `/setup` 建管理员 → `scripts/fork/migrate_default_owner.py <邮箱> --data-dir backend/.deer-flow` 先预览再 `--apply` → 启动 → 飞书单聊发 `/connect <连接码>`。
-4. **飞书手测清单**（绑定后）：
+1. ~~推送 `main`~~、~~切换与重建~~：2026-10-08 已完成（见上方切换记录）。worktree 在迁移完成后再删。
+2. ~~建号与迁移~~、~~飞书 `/connect`~~：2026-10-09 已完成（飞书在新企业绑定）。
+3. **飞书手测清单**（绑定后）：
    - [ ] 未绑定发 `/repo`：只收到绑定提示，不建会话
    - [ ] `/connect` 后单聊连续对话有上下文
    - [ ] `/repo` 卡片选目录 → 下一条消息落在该目录

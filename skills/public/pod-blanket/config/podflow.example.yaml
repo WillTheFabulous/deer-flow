@@ -1,0 +1,422 @@
+# POD 毛毯流水线配置（podctl init 复制到 $PODFLOW_HOME/podflow.yaml，由人编辑）
+# 预算与单价只能在这里改：人设被要求不得改动，程序也不提供提高预算的命令。
+# 对应方案「总览与运行设置」CFG01–CFG18。
+
+schema_version: "0.1"
+
+# CFG01 DeerFlow 版本/commit：部署时填写实际版本
+deerflow_version: ""
+
+# CFG14 调度时区：预算日界线、报告时间统一用它
+timezone: Asia/Shanghai
+
+litellm:
+  base_url: http://host.docker.internal:4001
+  # key 写在 $PODFLOW_HOME/secrets.env（沙箱会剔除含 KEY 的环境变量）
+  api_key_name: LITELLM_API_KEY
+
+# CFG02 图像理解 / 结构化阶段模型（P01–P11）
+llm:
+  default_model: gpt-6.1-sol-high
+  stage_models: {}            # 例：{P05: gpt-6.1-sol-medium}
+  timeout_seconds: 480        # 流式时是两段输出之间最长的等待；非流式时是整次调用的上限
+  stream: true                # 流式接收：P02 这种上万 token 的长输出不会撞上本地 480 秒与代理 600 秒的上限
+  json_mode: true             # 不支持 response_format 时自动退回普通模式
+  max_format_retries: 2       # JSON / schema 不合格时带错误说明重问的次数
+  s06_job_retries: 1          # P06 重问几次都没过时，把任务放回队列、新开对话重写几次（之后才判失败）
+  vision_max_side: 2048       # 发给视觉模型的图片最长边
+  max_tokens: null
+
+# CFG03 生图服务与模型：每个任务按「fanout 模型 × 出图方式」并发出多张候选
+image_generation:
+  timeout_seconds: 840        # 代理侧 total_budget 800s
+  format_profile: blanket_preview
+  fanout:
+    - model: gemini-nano-banana-2.1       # nano-banana 2.1
+      n: 1
+      enabled: true
+    - model: gpt-image-2.5-flare
+      n: 1
+      enabled: true
+    - model: gpt-image-2.5-sunburst       # 与 flare 同一后端渠道，慢约 2.4 倍
+      n: 1
+      enabled: true
+  # 出图方式：t2i = 文生图（只给提示词）；i2i = 图生图（同一个模型 + 参考图原图）。两种一起跑，互不依赖
+  # 参考图「授权受限」时不做图生图；修复始终编辑自产图
+  modes: [t2i, i2i]
+  # 小变化（改两处、构图不动）的出图方式：文生图从零画，保不住原构图，默认只做图生图
+  small_change_modes: [i2i]
+  # 图生图除原模型外，再用 <模型>-edit 各出一张（同一提示词、同一张参考图）。
+  # mooya 代理里两者走同一条编辑路由，Edit 这张等于每个模型多一次图生图；fanout 里不要直接写 -edit 模型
+  i2i_edit: true
+  # 退役模型 → 接替模型：旧图的修复（质检修复、选款里「修改」）和没出完的旧槽位都改用接替模型。以用户配置为准，不与样例合并
+  replaced_models:
+    gemini-3-pro-image-preview: gemini-nano-banana-2.1
+
+format_profiles:
+  blanket_preview:
+    description: 130x150cm 毛毯预览画幅（约 4:5），不是供应商生产规格
+    target_ratio: "4:5"
+    gemini: {imageSize: "2K", aspectRatio: "4:5"}
+    gpt: {size: "1856x2304", quality: "high", format: "png"}
+
+# 参考图 2D 化（S01P 图案提取）：接入后先用图生图把参考图里的印花提取成干净的平面图案（去掉房间、褶皱、透视、光影），
+# 之后的拆解、图生图和质检都用这张图案。提示词照抄 Pattern DNA（references/flatten_textile.md）；
+# 模型按用户要求（2026-10-20）用 2.5-flare，失败换 sunburst，不用 Pattern DNA 的 gpt-image-2；
+# models 依次尝试，前一个失败再换下一个；画幅按 format_profile 的 gpt 参数（4:5、1856x2304、high）。关掉就回到用原图
+pattern_extract:
+  enabled: true
+  models: [gpt-image-2.5-flare, gpt-image-2.5-sunburst]
+  input_max_side: 1536        # 输入图先压成最长边多少像素的 JPEG（与 Pattern DNA 一致）
+
+# 任务命名（S01N）：拆解时另起一个线程，让模型看原图写 4–8 个字的描述（P12），接上这张图登记那天的月日，
+# 如「森林三伙伴水彩 1020」；任务列表、任务明细、卡片标题和候选表表名都带上。只起一次，改名用 podctl seed name。
+# 模型默认 llm.default_model，可在 llm.stage_models 里给 P12 换快一点的
+task_name:
+  enabled: true
+
+# 画面完整描述（S02D，P13）：拆解后看平面图案给参考图写一份画面档案——画风、配色、每个主体（物种、颜色斑纹、
+# 表情、动作、位置）、环境、构图与画风统一规则，中英两份。系列规则、裂变策划、出图指令和质检都照它写：
+# 文生图照它把没改的部分写全，换场景 / 加元素时新内容照它的画法画。没写成不挡拆解（用拆解简版兜底）；
+# 老参考图用 podctl seed describe --all 补写。关掉就都按拆解简版写
+describe:
+  enabled: true
+  concurrency: 3              # seed describe --all 同时写几张
+
+# CFG04 供应商 SKU / 模板：没有模板只能标 preview_ready
+print:
+  sku_templates: {}
+
+# CFG05–CFG08 预算：0 表示不接收新付费任务
+# enforce: false = 不设上限、不要求单价、不计费用（调用仍落账，幂等与结果未知对账照常生效）
+budget:
+  enforce: true
+  currency: CNY
+  daily_cap: 0
+  total_cap: 0
+  per_task_cap: 0
+
+# 单价：null = 未知，未知价格一律阻断（方案 CFG08）
+prices:
+  chat:
+    gpt-6.1-sol-high: {input_per_mtok: null, output_per_mtok: null}
+  image:                      # -edit 模型按原模型计价
+    gemini-nano-banana-2.1: {per_image: null}
+    gpt-image-2.5-flare: {per_image: null}
+    gpt-image-2.5-sunburst: {per_image: null}
+  # 调用前预留按这个 token 量估算，结算按实际 usage
+  estimate_tokens:
+    default: {input: 12000, output: 6000}
+    P02: {input: 16000, output: 12000}
+
+batch:
+  size: 12                    # CFG09 旧的「每轮出图最多领几个任务」：出图 worker 有活一直领、不再读它（手动 worker --batch N 仍能限）
+  auto_plan_after_analyze: true  # 拆解 / 修订完自动策划方向，系列规则在确认方向时一并认可（只审一次）
+  # true = 策划出的方向全部自动确认、直接出图（系列规则一并认可），不再等人挑选：拆解 / 修订后的自动策划、
+  # 「继续裂变」「再出一轮」、换一批都算（worker 的补充规划 auto_plan 除外）；还没开始出图的方向可以 directions cancel 停掉
+  auto_confirm_directions: false
+  gen_concurrency: 9          # CFG10 单个方向里几个槽位同时发（3 个模型 × 文生图 / 图生图 / 图生图 Edit = 9）
+  # 出图 worker：一个进程里开 workers 条工位，每条一次推进一个方向；所有工位共用生图名额 image_concurrency、
+  # LLM 名额 llm_concurrency（P06 写生成指令、P11 批次反馈）。连接数估算 workers + image_concurrency + 6 别超过库角色上限
+  workers: 8
+  image_concurrency: 8
+  llm_concurrency: 3
+  queue_order: fair           # fair = 选款里要求的修改最先、其余按任务轮流（在出最少的任务先领）；fifo = 先来先到
+  worker_idle_seconds: 60     # 后台 worker 没活时等多久新活（刚确认的方向、刚点的修改直接接上）再退出
+  worker_lifetime_minutes: 120  # 跑满这么久交接给新的 worker（先拉起接班的，自己做完手上几步再退出）
+  worker_reload_check: true   # podflow.yaml / secrets.env / 引擎代码有变化也交接，新进程读新配置、跑新代码
+  repair_limit: 2             # CFG11 每个候选的修复上限
+  transient_retry_limit: 3    # CFG12 瞬时错误重试上限（不含结果未知的重付费）
+  wake_interval_minutes: 10   # CFG13 巡检间隔
+  review_backlog_limit: 50    # CFG15 待人工审核积压上限
+  auto_plan: false            # 队列不足时 worker 自动跑 P05（M3 再开）
+
+# 质检（S07 / P07 与自动修复 T01R）：false = 暂停，新图只做文件检查、标「未经质检」直接进选款，
+# 之前判了修复的图也不再修（选款里人工要求的修改照常做）；质检代码保留，改回 true 就恢复
+qc:
+  enabled: true
+
+# 参考图接入确认（S01 看不清或模型拿不准时停下，开「参考图接入」待审等人点接入）：false = 冻结，
+# 不停下、直接图案提取 → 拆解 → 自动策划第一轮方向，模型原本的疑点记在接入记录里；授权受限照旧停下。
+# 代码保留，改回 true 就恢复；关着时再跑 seed analyze 会放行之前停在这一步的参考图
+intake:
+  review: true
+
+# 裂变策划（S05）：程序随机挑改动组成槽位（批次号做种子，少被改过的优先、尽量不同维度、同一批不重复），P05 给每个槽位
+# 写一个方向。一处改动 = 一个可变单元（画面描述 P13 识别的「会一起改的一组对象」：单个角色、满屏星星、一圈花边……）上的
+# 一个小变化字段，整体配色、绘制技法这类整幅字段挂在「整幅」上。小变化改两处、构图不动；大变化要么改主题叙事 / 整体构图 /
+# 绘制技法 / 动态字段（动作姿态、朝向视线、距离互动、承托依附、陪衬角色，可以连带调整布局）中的一个字段（单字段大改），
+# 要么改三处（三处组合）。每处都要看得见（单元显著度中以上，脸部字段降一档），同一单元上的两处要求它是大档且部位不同，
+# 整幅最多一处。池不够时少出，不凑数
+plan:
+  # pairs = 按「可变单元 × 字段」策划（缺省）；fields = 应急回退成按字段策划（两个字段、改到画面里的同类元素）。
+  # 参考图还没有可变单元清单时（画面描述关着 / 没写成 / 旧版），那一张自动按字段策划
+  unit: pairs
+  # true（缺省）= 大变化也用拆解判成不可变的小变化字段（以前按「构图不动时改不了」判的，如动作姿态、距离互动、
+  # 陪衬角色）：三处组合全收，单字段大改与二次大变化只收其中的动态字段，出图时可以连带调整布局；被门控关掉的维度、
+  # 系列锁定的字段不用。false = 只按拆解判定（三处组合只用小变化池 + 绘制技法）
+  combo_layout_fields: true
+  small_count: 12             # 每轮小变化几个
+  # 小变化里换主体（D09：单元里的主体整个换成同主题的另一种）的比例：0 = 不分组、照旧随机挑；
+  # 比如 0.8 = 八成的小变化至少一处换主体（P14 先给每个要换的单元一份互不相同的新主体清单），其余不换主体。
+  # 这张图没有能换的主体时自动全部照旧，卡片写原因
+  small_swap_ratio: 0
+  big_count: 8                # 每轮大变化几个（单字段大改 + 三处组合）
+  big_single_count: 4         # 大变化里单字段大改几个，其余是三处组合；大字段不够时多出三处组合
+  big_single_repeat: 1        # 单字段大改里同一个大字段一轮最多几次（大字段少的图想多出单字段大改时调成 2）
+  # 大变化的配额：dynamic = 动态字段，technique = 绘制技法，各占几成（0–1，合计不超过 1；0 = 不限定、照旧随机挑）。
+  # 这一类的字段不够时由其余补。换画法的槽位（单字段大改 / 二次大变化）由程序从画法大类里各分一种不重复的，
+  # 避开原图同类的和这个系列做过的；三处组合里的绘制技法是同一画法大类内整幅调整
+  big_single_quota:           # 单字段大改
+    dynamic: 0
+    technique: 0
+  combo_quota:                # 三处组合：含动态字段的 / 含技法调整的
+    dynamic: 0
+    technique: 0
+  slots_per_call: 4           # 每次 P05 调用写几个槽位（每次调用受 llm.timeout_seconds 限制）
+  concurrency: 4              # 同时跑几次 P05
+  # 二次大变化：一批小变化出完后，挑几个换了主体的小变化，以它们出的图为底图再各策划一个单字段大改
+  # （图生图的输入图是这张小变化图）。只自动接 small_swap_ratio 开着时策划的批次，只做一层
+  derived:
+    enabled: false
+    count: 8                  # 每个原批次最多几个二次大变化
+    per_parent: 1             # 每个小变化最多当几次底图
+    quota:                    # 二次大变化里动态字段 / 换画法各占几成（同上）
+      dynamic: 0
+      technique: 0
+
+review:
+  # 选款拼图的中文字体（TTF / OTF 路径），用来写方向标题、文生图 / 图生图；不填或读不到时只写 ASCII
+  sheet_font: null
+
+# 选中的款同步到飞书多维表格（程序自动建表，加选款的人为可管理协作者）；
+# 要先在飞书开放平台给应用开 bitable:app（建表、写行、传缩略图、加协作者都用它）并发布版本。
+# 填了 wiki_space_id 时还要开 wiki:wiki，并把应用加为该知识库的可编辑成员，表会整本挪进知识库
+table:
+  enabled: false
+  name: POD 毛毯选款表
+  share_with: []              # 加为可管理协作者的 open_id；空 = 最近在卡片上选款的人
+  link_days: 90               # 原图下载链接（OSS 签名，不占飞书空间）的有效天数
+  link_refresh_days: 15       # 剩不到这么多天就续签
+  wiki_space_id: ""           # 飞书知识库 space_id；空 = 留在云空间。填了就把这本表（候选表和选中的款）挪进知识库
+  # 每张候选表最底下的「▶ 选款完成」控制行：在它的「选中」打勾 = 点了选款完成（订阅了记录变更事件时几秒内，
+  # 否则巡检兜底最多 10 分钟）；控制行下面每个选中的款一行套图状态和下载链接。false = 不建、不处理
+  control_row: true
+  # 默认视图：候选表打开只看「待选」（另有「全部」），选中的款打开只看「待上架」（另有「已上架」「全部」）；
+  # 候选表表名前面写选没选过（【已选】【有新图】）。程序给的链接直接打开这个视图。false = 不建视图、不加前缀
+  views: true
+  # 「选中的款」的下载确认：一款一个「下载确认」勾（下载好这一款的套图后打勾），表按隐藏的「排序」排：新出完的
+  # 套图在最上面、确认过的沉底；一个批次的款都勾了就算这个批次的交付包已下载（任务照常自动归档），反过来交付包标了
+  # 已下载这批的款也自动打勾。要开着 scenes.enabled。false = 不加这两列、不排序
+  download_confirm: true
+  # 新候选表从「模板」文件夹里的「候选表模板（勿删）」复制结构：「看图」的封面效果（适应 / 填充）、卡片样式这类
+  # 只能在飞书里设的视图设置在模板里设一次，以后的新表都照它（要应用有 base:table:create）。模板没了会重建，
+  # 复制不成照原样新建。false = 新表照原样新建
+  template: true
+  # 每周选款表：知识库根目录一本「POD 选款表模板（勿改）」（编辑者只读），每周从它复制一本「POD 选款表 W44（10.26–11.01）」，
+  # 周表格里每天一个文件夹「10-26 周一」（当天上传的任务的候选表、「10-26 选中的款」、「10-26 已归档」子文件夹），
+  # 「已上架的款」每本周表格一张。任务按上传日期归到那一天，之后继续裂变、补选都在那天。要配 wiki_space_id，
+  # 应用要有 wiki:node:create、base:app:read / update、base:role:read / update。旧任务的搬迁见
+  # podctl maintenance migrate-week；搬完再打开。false = 照旧一本表格
+  weekly: false
+  weekly_since: "2026-10-26"  # 上传日期早于这一天的任务留在旧表格
+  # 人在表里改的格子落库（table_cells / table_cell_log：旧值、新值、修改人、修改时间、程序怎么处理的）：「选中的款」
+  # 巡检每隔 cells_read_minutes 整张读一次（改了「上架标题」的同步到店铺，改了程序写的上架列下次写表改回）；
+  # 「已上架的款」、候选表在各自回读时记。false = 不读「选中的款」（另外两张照记）
+  cells_enabled: true
+  cells_read_minutes: 10
+
+# 上架状态：「选中的款」加三列（上架状态 待上架 / 已上架 / 不上了、上架日期、上架备注），人填、程序只读，
+# 回答「这个款上过没有」，任务进度里多一步「上架」；不影响任务归档
+listing:
+  enabled: true
+  read_minutes: 10            # 巡检隔多久回读一次这三列
+
+# 任务归档（历史任务）：做完的任务从任务列表收起，候选表挪进同一本表格的「已归档」文件夹（要开 base:block:read /
+# create / update 权限）；方向记录、图、交付包都留着，随时调出继续裂变（继续裂变会自动调出）
+shelf:
+  enabled: true
+  # 自动归档：选款完成、没有待选、至少选中 1 款、选中的款套图都出完（出完或缺图）就收起，套图出完卡片上写明；
+  # 一款没选、套图没出成的只能手动归档。先关着，手动归档验证过再打开
+  auto: false
+  folder_name: 已归档         # 候选表挪进去的文件夹（根目录下，没有就建）
+
+# mooya 机器调用接口（/api/service/v1）：选中的款交给 mooya 的图案管线出套图（场景图）。
+# 场景图怎么出（提示词、模板、模型、张数）全由 mooya 的预设决定，这边只管提交、查进度、取原图
+mooya:
+  base_url: http://host.docker.internal:5173   # 生产（nginx 反代到 mooya backend）；联调 dev 用 http://host.docker.internal:5006
+  token_name: MOOYA_SERVICE_TOKEN              # 服务令牌写在 secrets.env；mooya 那边只存它的 sha256
+  preset: pod_blanket                          # mooya 侧的预设名（毯子、图案管线默认参数）
+  timeout_seconds: 60                          # 单次请求超时（建任务要上传一张原图）
+  # 另加的客户端（每个绑 mooya 的一个租户，令牌各写在 secrets.env）。每套套图记着交它的客户端，查进度、取图都用它；
+  # 老客户端 legacy（上面的 token_name，platform_internal）留着查以前交的套图
+  clients: {}                                  # 例：{deerflow: {token_name: MOOYA_SERVICE_TOKEN_DEERFLOW}}（ai_temu_deerflow，贴 MIANDUDU 字标）
+  submit_client: legacy                        # 新交的套图用哪个；开 Temu 上架时要换成字标租户那个（领货号也用它）
+
+# 套图（场景图）：选款完成后自动给选中的款出（每款一个 mooya 任务），出完拉回原图、打套图压缩包、写进选款表
+scenes:
+  enabled: true
+  auto_after_accept: true     # 点「选款完成」后自动给这个任务里选中、还没出过套图的款出
+  max_in_flight: 2            # 同时最多几款在 mooya 上跑（mooya 管线是客户作业共用的）
+  poll_seconds: 30            # 后台进程查一次进度的间隔
+  sync_max_minutes: 40        # 一个后台进程最多跑这么久，没出完的由下一次巡检接着查
+  max_attempts: 6             # 一款拉图 / 存图连续出错这么多次就记「没出成」；mooya 连不上、5xx 不算次数，等下一次查
+  batch_packages: true        # 每个裂变批次打一个交付包（每款一个文件夹）：链接在任务列表开头、候选表「套图交付包」列、套图出完卡片
+  # 自愈（只管定了店铺、还没进采集箱的款）：缺图且图位对不上 → 让 mooya 补缺图（最多 2 次，老 mooya 没有动作端点就整套重出）；
+  # 没出成 → 整套重出 auto_retry_failed 次；mooya 熔断暂停超过 auto_resume_minutes 分钟 → 让它接着跑（最多 2 次）。
+  # 用完次数还不行的进「POD 待办」的「上架要你看」。false = 都等人
+  auto_heal: true
+  auto_retry_failed: 1
+  auto_resume_minutes: 120
+
+# 妙手开放平台（Temu 半托上架用）：AppKey / AppSecret 写在 secrets.env；签名 HmacSHA256，宿主机出口 IP 要在白名单里（开了的话）
+miaoshou:
+  base_url: https://openapi-erp.91miaoshou.com
+  app_key_name: MIAOSHOU_APP_KEY
+  app_secret_name: MIAOSHOU_APP_SECRET
+  min_interval_seconds: 0.5   # 两次调用之间至少隔多久（平台按应用限流）
+  timeout_seconds: 60
+
+# Temu 半托上架：候选表每家店一列勾选框（勾哪列上哪家店，选完店就领货号，货号也是 mooya 交付包名），套图出完自动准备
+# 10 张上架图（带 MIANDUDU 字标）和英文标题，人在「选中的款」看过标题勾「确认上架」，后台以每家店的样板商品为底建进妙手采集箱、
+# 发布到 Temu；上了的记进「已上架的款」（业务库 + 飞书，人填销量等数据）。要开着 scenes、table、listing、OSS。
+# 开了 temu.auto 的店不用人确认：候选表勾店铺 = 选中 + 上这家店，一路到发布（见下面 auto）
+temu:
+  enabled: false
+  # 上架引擎（2026-10-30 统一到 mooya，mooya feature-plans/temu-listing-unify）：local = 本机直连妙手（旧）；
+  # mooya = 确认上架的交给 mooya（取图、标题、建箱、品牌、发布都在 mooya，这里只交单、跟进、写表）。
+  # 切换先 `podctl temu export-to-mooya` 把进了妙手的单搬过去，再在 mooya 打开本机配的店（见 DEPLOYMENT.md「上架统一到 mooya」）
+  engine: local
+  mooya_client: null          # 交上架单用哪个 mooya 客户端；空 = mooya.submit_client
+  publish: box                # box = 只进采集箱、人在妙手点发布（先用这个验证）；auto = 进箱后自动发布（全自动的店按 auto.publish）
+  # 全自动（2026-10-30）：这几家店在候选表勾店铺列 = 定为选中（确认人是勾的人）+ 记店铺 + 领货号 + 出套图，
+  # 套图、上架图和标题好了程序勾「确认上架」，建箱、写品牌、发布，全程不用人点。勾完 tick_grace_minutes 分钟内取消勾 = 撤销
+  # （0 = 勾了马上处理）；人在「选中的款」取消「确认上架」= 暂停这一款（再勾接着上）；开始建箱前取消店铺勾 = 去掉这家店。
+  # 全自动的店要配 brand_id（没品牌不发布）。出了异常进「POD 待办」的「上架要你看」、后台出错发红卡
+  auto:
+    enabled: false
+    stores: []                # 开全自动的店铺 key；空 = 全部店（灰度时先写一家，如 [s3]）
+    tick_grace_minutes: 5     # 犹豫期：勾店铺后这么久内取消勾算撤销；犹豫期里点「选款完成」当场定
+    confirm: true             # false = 还要人勾「确认上架」（只省掉选款按钮）
+    publish: true             # false = 只进采集箱、人在妙手点发布
+  link_resave_days: 20        # 在采集箱里放了这么多天还没发布的，重签上架图链接存回去（链接 30 天到期）
+  brand_recheck_hours: 6      # 品牌写满次数还没写上的，之后每隔这么久再核对一次
+  alert_stuck_hours: 6        # 一款在同一环节卡这么久（建箱 / 品牌 / 发布中 / 套图）进「上架要你看」
+  alert_failures: true        # 上架后台这一轮有没上成的发红卡（每款一次）
+  stores: []                  # 每家店：{key, label, name, prefix, shop_id, template_detail_id, brand, brand_id}，顺序 = 候选表店铺列的顺序
+  # 例（2026-11-02 起线上四家店；同一款几家店时交付包用排在最前的那家的货号起名）：
+  # - {key: s1, label: 1店, name: 毛毯pod, prefix: FLRP, shop_id: "整数店铺 ID", template_detail_id: "样板的采集箱 ID", brand: MIANDUDU, brand_id: "妙手 brandId"}
+  # - {key: s2, label: 2店, name: 毛毯POD2店, prefix: JUHP, shop_id: "整数店铺 ID", template_detail_id: "样板的采集箱 ID", brand: MIANDUDU, brand_id: "妙手 brandId"}
+  # - {key: s3, label: 3店, name: CozWeave H, prefix: FLow, shop_id: "整数店铺 ID", template_detail_id: "样板的采集箱 ID", brand: MIANDUDU, brand_id: "妙手 brandId"}
+  # - {key: s4, label: 4店, name: LoomNest J, prefix: Deer, shop_id: "整数店铺 ID", template_detail_id: "样板的采集箱 ID", brand: MIANDUDU, brand_id: "妙手 brandId"}
+  # temu.engine: mooya 时 mooya 那边（交套图的客户端绑的租户）要有同 key、同前缀、同店名的店铺行（doctor 会比对）；
+  # 一家店在 mooya 别的租户也配着时（1店 / 2店的精作款在 ai_temu），前缀必须不一样：货号按租户续号、底账按货号认行。
+  # shop_id 是妙手接口里的整数店铺 ID（不是后台的 v2_…，`podctl temu probe` 能列出）；prefix 的大小写照店里已用的货号，
+  # 号从 mooya 续（店里人工上过的号要先在 mooya 的 delivery_name_reservations 补上，见 DEPLOYMENT.md）。
+  # brand_id 是店铺模式详情里的 brandId（样板克隆带不进品牌，进箱后程序单独写）：妙手前端品牌下拉栏旁边的号不是它，
+  # 在妙手里给一个采集箱商品选好品牌、保存后读回店铺模式详情拿到（MIANDUDU 是 1000000793013）；不配就不写品牌
+  operators: []               # 能勾「确认上架」的人（open_id）；空 = 都能
+  title_limit: null           # 标题上限（字符）；空 = 规则里的 < 250
+  poll_minutes: 5             # 隔多久查一次发布结果
+  publish_timeout_minutes: 120  # 提交发布这么久还没发布记「上架失败」（接着盯 watch_days 天，人在妙手修好重发会自动标已上架）
+  watch_days: 7
+  search_pages: 4             # 查采集箱列表最多翻几页（每页 500 个，新的在前）
+  images:
+    link_days: 30             # 给妙手的上架图签名链接有效天数（建箱前快到期会重签）
+    check_slots: true         # 图位校验：10 张、1–2 是 04 / 05、8 / 9 是 08 / 07、最后一张是尺码图；对不上不自动上
+  listed:
+    enabled: true             # 「已上架的款」飞书表
+    read_minutes: 30          # 隔多久回读一次人填的列（Temu 状态、销量、销售额、备注）；人改的「上架标题」同步到店铺
+    # 底账来源：local = 本机 listed_products（只有这里上的款）；mooya = 四家店统一读 mooya 底账（含 1店 / 2店交付工作台上的、
+    # 回填的人工款），人填的列和改的标题写回 mooya。clients 是拉底账用的 mooya 客户端（各绑一个租户），空 = mooya.submit_client
+    source: local
+    clients: []               # 例：[deerflow, ai_temu]（ai_temu 绑 1店 / 2店的租户，mooya 那边只给它底账权限）
+    pull_minutes: 2           # 隔多久拉一次 mooya 底账（巡检里）
+    sync_batch: 80            # 一次表格同步最多写几行（第一次补上千款分几轮写完）
+    # 精作款周表格（要 source: mooya 和 table.wiki_space_id）：这几个客户端的款（mooya 上做的 1店 / 2店）不进「已上架的款」
+    # （按客户端分：这里自己上到 1店 / 2店的款照样进「已上架的款」），
+    # 按上架日期进知识库「精作款」下面的周表格「精作款 W44（10.26–11.01）」，每天一张表「10-26 周一」。
+    # 打开后先 `podctl temu listed crafted template` 建模板、在「看图」里设封面效果，再 `crafted lock`，之前精作款的行先不写；
+    # 已经写进「已上架的款」的用 `crafted migrate` 挪过去
+    crafted:
+      enabled: false
+      clients: [ai_temu]
+
+# Temu 官方 Partner 接口（已上架的款改标题、回读 Temu 商品 ID / 审核 / 在售状态；妙手改不了已发布的半托商品）。
+# 先在 Temu Partner 平台建应用、店铺在跨境卖家中心「系统管理 → 授权管理」授权，再跑只读的 `podctl temu open probe` 验证。
+# 凭据都在 secrets.env：应用的 app_key / app_secret（名字见下），每家店的 access_token（名字在 stores.<key>.token_name）
+temu_open:
+  enabled: false
+  base_url: https://openapi-b-us.temu.com/openapi/router
+  app_key_name: TEMU_APP_KEY
+  app_secret_name: TEMU_APP_SECRET
+  stores: {}                  # 例：{s3: {token_name: TEMU_TOKEN_S3, expires_on: "2027-10-30"}}（doctor 到期前 7 天提醒）
+  poll_hours: 6               # 隔多久回读一次已上架商品的状态
+  goods_url: ""               # 商品链接模板（写进「商品链接」），例：https://www.temu.com/goods.html?goods_id={goods_id}
+  min_interval_seconds: 1
+  timeout_seconds: 30
+  wrap_request: false         # 业务参数包在 request 里（以可行性验证为准）
+  api:
+    list: bg.local.goods.list.query
+    update: bg.local.goods.partial.update
+
+# CFG16 连续试运行：tick 只在试运行窗口内派发（podctl trial start 开窗）
+trial:
+  duration_hours: 24
+  require_window_for_tick: true
+
+# 业务库：url_name 留空 = 本地 SQLite（数据目录 podflow.db）；填 secrets.env 里的连接串名 = 用 Postgres
+database:
+  url_name: ""                # 例：PODFLOW_DATABASE_URL（postgresql://user:pass@host:port/db）
+
+# 素材存储：local = 只存本机；oss = 以 OSS 为准、本机只做缓存（缺了自动拉回）
+storage:
+  backend: local
+  oss:
+    bucket: ""
+    endpoint: ""              # 传输用；与 ECS 同地域时优先内网 endpoint（不走公网带宽）
+    public_endpoint: ""       # 生成签名链接用（浏览器 / 飞书直接访问）
+    prefix: pod-blanket/      # 对象 key = prefix + 数据目录里的相对路径
+    access_key_id_name: OSS_ACCESS_KEY_ID          # 凭证写在 secrets.env
+    access_key_secret_name: OSS_ACCESS_KEY_SECRET
+    upload_rate_kbps: 0       # 上传限速（KB/s），0 = 不限；走公网 endpoint 时建议限速，免得挤占宿主机上行
+    timeout_seconds: 120
+
+# 网关定时器（飞书渠道启动后每分钟调一次 podctl tick --auto）：到点才巡检、每天发一次日报
+schedule:
+  enabled: true
+  tick_interval_minutes: 10   # 不填则用 batch.wake_interval_minutes
+  daily_report_at: "21:00"    # 按 timezone 的本地时间；留空 = 不发日报（notify.style 为 full 时用）
+  # notify.style 为 brief 时发状态总结的时刻（按 timezone；取代日报）：待你处理 / 待生成·进行中 / 今日已完成 / 异常，
+  # 什么都没有时不发；留空 = 不发总结
+  digest_at: ["10:00", "15:00", "21:00"]
+
+# CFG17 旧开关（下单类的自动上架）：只能是 false。Temu 上架见上面的 temu.*：默认每一款人勾「确认上架」，
+# 开了 temu.auto 的店勾店铺就一路上到发布（有撤销窗口、能暂停，全程留痕）
+publish:
+  auto_listing: false
+
+# 项目级约束，作为 G00 的 project_constraints 传给每个阶段
+project:
+  market: 未知；Temu 目标站点待确认
+  user_constraints: []
+  default_positioning: 以参考图为底组织系列：小变化在参考图上改两个字段，每个都把画面里的同类元素一起改、一眼看得出，构图照原图；大变化可沿用参考图的组合与布局，也可按改动调整；不出现可识别的既有角色、品牌标识或商标
+
+notify:
+  # full = 每个后台任务、套图、归档、有异常的巡检都发卡片，每天按 schedule.daily_report_at 发日报；
+  # brief = 只发三样（digest.py）：有待办时按 todo 的间隔提醒、schedule.digest_at 的状态总结、
+  #   你发起的事做完回一行（出错卡住发两行红卡）；程序自己推进的（出图、套图、归档、巡检）只写进状态总结
+  style: full
+  # 巡检通知只在有告警或需要人工时发，同样内容在这个时长内不重复发；brief 时出图 / 套图同样的出错也按它去重
+  renotify_hours: 6
+  todo:                         # brief 时的待办提醒
+    interval_minutes: 60        # 有待办时多久提醒一次；0 = 不单独提醒（只在状态总结里列）
+    active_hours: "09:00-21:00" # 只在这个时段里提醒（按 timezone，开始含、结束不含）；留空 = 全天
+    # 提醒哪几类：待挑选 / 待下载（交付包打好、没标已下载）/ 套图等人工 / 上架要你看（没上成、卡太久、货号、品牌、
+    # 标题不合规、链接快到期、Temu 驳回）
+    kinds: [pick, download, parked, listing]
+    skip_unchanged: false       # true = 和上次提醒的一样就不发
+  feishu:
+    enabled: false
+    receive_id_type: chat_id   # chat_id / open_id
+    receive_id: ""

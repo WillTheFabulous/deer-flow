@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "P02 结构化设计拆解 result",
+  "type": "object",
+  "required": ["analysis_id", "seed_id", "traits", "fields", "groups", "objects", "relations"],
+  "properties": {
+    "analysis_id": {"type": "string"},
+    "seed_id": {"type": "string"},
+    "traits": {
+      "description": "参考图特征：程序按它关掉不适用的维度（单幅场景不做排列重复，没有文字不做文字定制）",
+      "type": "object",
+      "required": ["layout_kind", "has_text"],
+      "properties": {
+        "layout_kind": {"enum": ["scene", "pattern", "mixed"]},
+        "has_text": {"type": "boolean"}
+      }
+    },
+    "fields": {
+      "description": "field_dictionary.fields 里的在用字段每个恰好一条；停用字段不输出；M 字段可选",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["field_id", "value", "evidence_type"],
+        "properties": {
+          "field_id": {"type": "string", "pattern": "^[MD][0-9]{2}$"},
+          "value": {},
+          "evidence_type": {
+            "enum": ["observed", "user_provided", "inferred", "judgment", "suggestion", "measured", "unknown", "not_applicable"]
+          },
+          "evidence_ref": {"type": ["string", "null"]},
+          "uncertainty": {"type": ["string", "null"]},
+          "variable": {"type": "boolean", "description": "tier 为 small / big 的字段必填：这张图上能不能拿来裂变"},
+          "variable_reason": {"type": ["string", "null"], "description": "一句话：能往哪变，或为什么不能变"}
+        }
+      }
+    },
+    "groups": {"type": "array"},
+    "objects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["object_id", "role"],
+        "properties": {
+          "object_id": {"type": "string"},
+          "role": {"type": "string"},
+          "attributes": {"type": "object"},
+          "visual_function": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "relations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "type", "to"],
+        "properties": {
+          "from": {"type": ["string", "array"]},
+          "type": {"type": "string"},
+          "to": {"type": ["string", "array"]},
+          "evidence_type": {"type": "string"}
+        }
+      }
+    }
+  }
+}

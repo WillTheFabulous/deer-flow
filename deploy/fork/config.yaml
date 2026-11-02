@@ -233,6 +233,178 @@ models:
       extra_body:
         enable_thinking: true           # 仅思考模式：保持开启，避免发送 false 触发报错
 
+  # ── Fork：mooya LiteLLM（宿主机 4001）——与 mooya 共用中转商 ──────────────────────
+  # 只接 scripts/fork/probe_litellm_models.py 实测「对话 / 流式 / 两步工具调用」都通过的模型（2026-10-10）。
+  # key 是 .env 的 LITELLM_API_KEY：新增引用前必须先放进 .env 并 force-recreate gateway，缺变量会让整份配置加载失败。
+  # gpt-5.6 的推理档位由模型名后缀决定，不发思考参数（supports_thinking: false）；max / ultra 档首字可能很慢，
+  # 所以放宽 stream_chunk_timeout。luna-max / luna-ultra 在这把 key 上没有可用渠道（404），未接。
+  - name: gpt-5.6-terra-high
+    display_name: GPT-5.6 Terra High
+    description: mooya LiteLLM · anyaigc
+    use: langchain_openai:ChatOpenAI
+    model: gpt-5.6-terra-high
+    base_url: http://host.docker.internal:4001/v1
+    api_key: $LITELLM_API_KEY
+    timeout: 900.0
+    stream_chunk_timeout: 600.0
+    max_retries: 2
+    supports_thinking: false
+    supports_vision: true
+
+  - name: gpt-5.6-terra-xhigh
+    display_name: GPT-5.6 Terra XHigh
+    description: mooya LiteLLM · anyaigc
+    use: langchain_openai:ChatOpenAI
+    model: gpt-5.6-terra-xhigh
+    base_url: http://host.docker.internal:4001/v1
+    api_key: $LITELLM_API_KEY
+    timeout: 900.0
+    stream_chunk_timeout: 600.0
+    max_retries: 2
+    supports_thinking: false
+    supports_vision: true
+
+  - name: gpt-5.6-terra-max
+    display_name: GPT-5.6 Terra Max
+    description: mooya LiteLLM · anyaigc
+    use: langchain_openai:ChatOpenAI
+    model: gpt-5.6-terra-max
+    base_url: http://host.docker.internal:4001/v1
+    api_key: $LITELLM_API_KEY
+    timeout: 900.0
+    stream_chunk_timeout: 600.0
+    max_retries: 2
+    supports_thinking: false
+    supports_vision: true
+
+  - name: gpt-5.6-terra-ultra
+    display_name: GPT-5.6 Terra Ultra
+    description: mooya LiteLLM · anyaigc
+    use: langchain_openai:ChatOpenAI
+    model: gpt-5.6-terra-ultra
+    base_url: http://host.docker.internal:4001/v1
+    api_key: $LITELLM_API_KEY
+    timeout: 900.0
+    stream_chunk_timeout: 600.0
+    max_retries: 2
+    supports_thinking: false
+    supports_vision: true
+
+  - name: gpt-5.6-sol-high
+    display_name: GPT-5.6 Sol High
+    description: mooya LiteLLM · anyaigc
+    use: langchain_openai:ChatOpenAI
+    model: gpt-5.6-sol-high
+    base_url: http://host.docker.internal:4001/v1
+    api_key: $LITELLM_API_KEY
+    timeout: 900.0
+    stream_chunk_timeout: 600.0
+    max_retries: 2
+    supports_thinking: false
+    supports_vision: true
+
+  - name: gpt-5.6-sol-xhigh
+    display_name: GPT-5.6 Sol XHigh
+    description: mooya LiteLLM · anyaigc
+    use: langchain_openai:ChatOpenAI
+    model: gpt-5.6-sol-xhigh
+    base_url: http://host.docker.internal:4001/v1
+    api_key: $LITELLM_API_KEY
+    timeout: 900.0
+    stream_chunk_timeout: 600.0
+    max_retries: 2
+    supports_thinking: false
+    supports_vision: true
+
+  - name: gpt-5.6-sol-max
+    display_name: GPT-5.6 Sol Max
+    description: mooya LiteLLM · anyaigc
+    use: langchain_openai:ChatOpenAI
+    model: gpt-5.6-sol-max
+    base_url: http://host.docker.internal:4001/v1
+    api_key: $LITELLM_API_KEY
+    timeout: 900.0
+    stream_chunk_timeout: 600.0
+    max_retries: 2
+    supports_thinking: false
+    supports_vision: true
+
+  - name: gpt-5.6-sol-ultra
+    display_name: GPT-5.6 Sol Ultra
+    description: mooya LiteLLM · anyaigc
+    use: langchain_openai:ChatOpenAI
+    model: gpt-5.6-sol-ultra
+    base_url: http://host.docker.internal:4001/v1
+    api_key: $LITELLM_API_KEY
+    timeout: 900.0
+    stream_chunk_timeout: 600.0
+    max_retries: 2
+    supports_thinking: false
+    supports_vision: true
+
+  - name: gpt-5.6-luna-high
+    display_name: GPT-5.6 Luna High
+    description: mooya LiteLLM · anyaigc
+    use: langchain_openai:ChatOpenAI
+    model: gpt-5.6-luna-high
+    base_url: http://host.docker.internal:4001/v1
+    api_key: $LITELLM_API_KEY
+    timeout: 900.0
+    stream_chunk_timeout: 600.0
+    max_retries: 2
+    supports_thinking: false
+    supports_vision: true
+
+  - name: gpt-5.6-luna-xhigh
+    display_name: GPT-5.6 Luna XHigh
+    description: mooya LiteLLM · anyaigc
+    use: langchain_openai:ChatOpenAI
+    model: gpt-5.6-luna-xhigh
+    base_url: http://host.docker.internal:4001/v1
+    api_key: $LITELLM_API_KEY
+    timeout: 900.0
+    stream_chunk_timeout: 600.0
+    max_retries: 2
+    supports_thinking: false
+    supports_vision: true
+
+  # DeepSeek 用 PatchedChatDeepSeek：保留并回传 reasoning_content（0813 快照总带推理内容）
+  - name: deepseek-v4-pro
+    display_name: DeepSeek-V4-Pro
+    description: mooya LiteLLM · anyaigc
+    use: deerflow.models.patched_deepseek:PatchedChatDeepSeek
+    model: deepseek-v4-pro
+    api_base: http://host.docker.internal:4001/v1
+    api_key: $LITELLM_API_KEY
+    timeout: 600.0
+    max_retries: 2
+    supports_thinking: false
+    supports_vision: true               # 实测能识图
+
+  - name: deepseek-v4-pro-0813
+    display_name: DeepSeek-V4-Pro-0813
+    description: mooya LiteLLM · anyaigc ×2 + moxin（唯一有跨供应商冗余）
+    use: deerflow.models.patched_deepseek:PatchedChatDeepSeek
+    model: deepseek-v4-pro-0813
+    api_base: http://host.docker.internal:4001/v1
+    api_key: $LITELLM_API_KEY
+    timeout: 600.0
+    max_retries: 2
+    supports_thinking: false            # 常开推理，没有开关参数
+    supports_vision: false              # 实测不能识图
+
+  - name: deepseek-v4.1-flash
+    display_name: DeepSeek-V4.1-Flash
+    description: mooya LiteLLM · anyaigc
+    use: deerflow.models.patched_deepseek:PatchedChatDeepSeek
+    model: deepseek-v4.1-flash
+    api_base: http://host.docker.internal:4001/v1
+    api_key: $LITELLM_API_KEY
+    timeout: 600.0
+    max_retries: 2
+    supports_thinking: false
+    supports_vision: true               # 实测能识图
+
   # Example: Volcengine (Doubao) model
   # - name: doubao-seed-1.8
   #   display_name: Doubao-Seed-1.8
@@ -2897,7 +3069,11 @@ skill_evolution:
 #   4. Verify with `SHOW search_path;` and a smoke test (create a run, read
 #      its history). The `public` schema should gain no new DeerFlow tables.
 database:
-  backend: sqlite
+  # Fork：2026-10-29 起主库在 mooya Postgres 的 deerflow 库（由 scripts/fork/migrate_sqlite_to_postgres.py 从 SQLite 迁来）。
+  # 2026-11-02 已删 SQLite 旧库（data/deerflow.db 与迁移快照），不能再回滚到 sqlite；恢复用 Postgres 备份
+  # /work/backups/postgres/deerflow_*.dump（scripts/fork/backup_pod_blanket.sh，PG_DATABASE=deerflow）。sqlite_dir 只在 backend: sqlite 时才用。
+  backend: postgres
+  postgres_url: $DATABASE_URL
   sqlite_dir: .deer-flow/data
 
 # ============================================================================
@@ -3023,7 +3199,7 @@ agent_storage:
 #   min_once_delay_seconds: 60   # Floor for one-time run_at offset and interval every_seconds
 #   recursion_limit: 1000        # LangGraph super-step cap for scheduled runs (matches the web UI)
 scheduler:
-  enabled: false
+  enabled: true               # Fork：pod-blanket 定时巡检（Web 新建定时任务；tick 还要求 podctl trial start 开窗）
   multi_instance: false       # Opt into lease-aware recovery across Gateway instances
   poll_interval_seconds: 5
   lease_seconds: 120
@@ -3618,6 +3794,10 @@ authorization:
 #
 # The first admin account is always created through /initialize regardless of this
 # setting, so turning it off cannot lock you out of a fresh install.
+
+auth:
+  local:
+    allow_registration: false   # Fork：2026-10-31 关掉（10-14 临时打开过）。前端默认不启动，新成员用 scripts/fork/onboard_member.py 开通（2026 端口开到公网 + allow_host_bash）
 
 # auth:
 #   local:

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "P15 Temu 上架标题 result",
+  "type": "object",
+  "required": ["title", "is_custom", "lead_type", "holiday", "gift_led"],
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 300,
+      "description": "一条英文标题：前 5 个词含 Flannel Blanket，280GSM 恰好一次，长度不到 250"
+    },
+    "is_custom": {"type": "boolean", "description": "图上有可替换的名字 / 照片 / 日期 / 定制文字"},
+    "lead_type": {"enum": ["text", "graphic", "mixed"]},
+    "holiday": {
+      "type": ["string", "null"],
+      "description": "节日款写节日名（如 Christmas），否则 null"
+    },
+    "gift_led": {"type": "boolean"},
+    "theme": {"type": "string", "description": "一句中文：图上卖的是什么（给人核对用）"}
+  }
+}

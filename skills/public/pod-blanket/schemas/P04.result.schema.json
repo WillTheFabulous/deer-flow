@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "P04 系列规则设计 result",
+  "type": "object",
+  "required": ["family_id", "analysis_id", "positioning", "preserve", "variable_domains", "coupled_rules", "exclude", "approval_status"],
+  "properties": {
+    "family_id": {"type": "string"},
+    "analysis_id": {"type": "string"},
+    "positioning": {"type": "string"},
+    "preserve": {"type": "array"},
+    "variable_domains": {
+      "description": "只放 variable_fields.variable 里的字段，每个字段一条",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["field_id", "options"],
+        "properties": {
+          "field_id": {"type": "string"},
+          "options": {"type": "array"},
+          "compatibility": {"type": "array"}
+        }
+      }
+    },
+    "locked_fields": {
+      "description": "用户、修订意见或印制要求明确要保持不动的可变字段（不出裂变方向）；设计建议不锁",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["field_id"],
+        "properties": {
+          "field_id": {"type": "string"},
+          "source": {"type": ["string", "null"], "description": "user_positioning / revision_note / production_constraints；别的值或没写的按设计建议处理，程序不锁"},
+          "reason": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "coupled_rules": {"type": "array"},
+    "exclude": {"type": "array"},
+    "hypothesis_refs": {"type": "array"},
+    "approval_status": {"enum": ["pending"]}
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "P14 换主体清单 result",
+  "type": "object",
+  "required": ["units"],
+  "properties": {
+    "units": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["unit_id", "candidates"],
+        "properties": {
+          "unit_id": {"type": "string", "description": "照抄 swap_units 里的 unit_id"},
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name"],
+              "properties": {
+                "name": {"type": "string", "minLength": 1, "maxLength": 40, "description": "新主体的中文名；组单元写成员一一对上的组合"},
+                "en": {"type": "string", "description": "英文名词短语，能直接写进生图提示词"},
+                "features": {"type": "string", "description": "标志性特征，不超过 40 个字"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

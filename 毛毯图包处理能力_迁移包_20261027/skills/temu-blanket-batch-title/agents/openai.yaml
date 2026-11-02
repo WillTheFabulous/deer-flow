@@ -1,0 +1,7 @@
+interface:
+  display_name: "Temu Blanket Batch Title"
+  short_description: "Batch-generate Temu blanket titles and fill the workbook."
+  default_prompt: "Use $temu-blanket-batch-title to process FLR0140-FLR0142 and write titles to the workbook."
+
+policy:
+  allow_implicit_invocation: true

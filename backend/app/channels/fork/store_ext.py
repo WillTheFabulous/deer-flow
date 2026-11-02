@@ -267,6 +267,25 @@ class ChannelStoreExtensionsMixin:
 
     # -- open_id → 单聊 chat_id 映射（飞书机器人菜单事件只带 open_id）------------
 
+    # -- POD 工作台：进入 POD 对话前所在的会话（「返回原会话」用；不是会话设置，不进快照）-----------
+
+    def get_pod_return_thread(self, channel_name: str, chat_id: str) -> str | None:
+        return self._get_chat_str(channel_name, chat_id, "pod_return_thread")
+
+    def set_pod_return_thread(self, channel_name: str, chat_id: str, thread_id: str | None) -> None:
+        with self._lock:
+            key = self._key(channel_name, chat_id)
+            now = time.time()
+            entry = dict(self._data.get(key) or {})
+            if thread_id:
+                entry["pod_return_thread"] = thread_id
+            elif entry.pop("pod_return_thread", None) is None:
+                return
+            entry.setdefault("created_at", now)
+            entry["updated_at"] = now
+            self._data[key] = entry
+            self._save()
+
     def set_user_chat(self, channel_name: str, user_id: str, chat_id: str) -> None:
         with self._lock:
             key = f"{channel_name}:user:{user_id}"

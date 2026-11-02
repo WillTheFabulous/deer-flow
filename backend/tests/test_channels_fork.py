@@ -833,7 +833,13 @@ class TestFeishuCards:
 
         lark = SimpleNamespace(EventDispatcherHandler=SimpleNamespace(builder=lambda *_args: FakeBuilder()))
         channel._build_event_handler(lark)
-        assert {"register_p2_im_message_receive_v1", "register_p2_card_action_trigger", "register_p2_application_bot_menu_v6"} <= set(registered)
+        assert {
+            "register_p2_im_message_receive_v1",
+            "register_p2_card_action_trigger",
+            "register_p2_application_bot_menu_v6",
+            # pod-blanket 候选表的控制行：多维表格记录变更
+            "register_p2_drive_file_bitable_record_changed_v1",
+        } <= set(registered)
 
 
 class TestFeishuInbound:

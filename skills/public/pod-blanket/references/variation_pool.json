@@ -1,0 +1,259 @@
+{
+  "source": "POD毛毯_设计拆解与长任务Agent方案_v1.xlsx / 裂变任务池",
+  "note": "18 条未执行的设计任务示例，全部未批准；新图不等于新爆款。axes 是方案初稿的变化轴清单，2026-10-16 起裂变按字段字典的小变化 / 大变化字段出方向、按字段统计覆盖，axes 只作参考；field_refs 用的是梳理前的编号（停用字段的去向见 field_dictionary.json）。",
+  "axes": [
+    "主体替换",
+    "动作",
+    "表情",
+    "配色",
+    "装饰",
+    "密度",
+    "配饰",
+    "联动主题",
+    "关系",
+    "布局",
+    "个性化",
+    "重复花型",
+    "技法",
+    "构图",
+    "邻近主题"
+  ],
+  "example_tasks": [
+    {
+      "task_id": "V001",
+      "family": "S01/F01",
+      "axis": "主体替换",
+      "change": "右侧小熊换幼态小兔",
+      "preserve": "其他物种、柔和画法、中央关系",
+      "coupled": "长耳上方留白与右侧体量",
+      "field_refs": "D09/D13/D15",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V002",
+      "family": "S01/F01",
+      "axis": "主体替换",
+      "change": "左侧长颈鹿换幼态小鹿",
+      "preserve": "三角色、暖灰色结构",
+      "coupled": "角/耳轮廓和左侧高度",
+      "field_refs": "D09/D13/D15",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V003",
+      "family": "S01/F01",
+      "axis": "动作",
+      "change": "小熊抬手改为双手放腿上",
+      "preserve": "物种、配色、主体数量",
+      "coupled": "手部轮廓与空出的留白",
+      "field_refs": "D18",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V004",
+      "family": "S01/F01",
+      "axis": "表情",
+      "change": "三角色改为轻闭眼安睡",
+      "preserve": "角色身份、画法、配色",
+      "coupled": "眼部细节与睡眠姿态一致",
+      "field_refs": "D17/D18",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V005",
+      "family": "S01/F01",
+      "axis": "配色",
+      "change": "棕灰改雾蓝与米白体系",
+      "preserve": "主题、动作、构图骨架",
+      "coupled": "保留底/主体/五官明暗角色",
+      "field_refs": "D36:D40",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V006",
+      "family": "S01/F01",
+      "axis": "配色",
+      "change": "引入浅鼠尾草绿辅助色",
+      "preserve": "圆润造型、原有关系",
+      "coupled": "灰绿对比与浅底辨识度",
+      "field_refs": "D37:D39",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V007",
+      "family": "S01/F01",
+      "axis": "装饰",
+      "change": "部分星星改为小月牙",
+      "preserve": "主体组合、外围疏密",
+      "coupled": "月牙尺度与朝向节奏",
+      "field_refs": "D11/D34",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V008",
+      "family": "S01/F01",
+      "axis": "密度",
+      "change": "减少外围装饰数量",
+      "preserve": "主体、配色、绘制技法",
+      "coupled": "上下留白重新平衡",
+      "field_refs": "D30/D34",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V009",
+      "family": "S01/F01",
+      "axis": "配饰",
+      "change": "小熊增加小围巾",
+      "preserve": "主体与关系、现有配色角色",
+      "coupled": "围巾不遮面、不破坏颈部",
+      "field_refs": "D20",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V010",
+      "family": "S01/F02",
+      "axis": "联动主题",
+      "change": "森林阅读：三角色围绕书本",
+      "preserve": "圆润、亲近、柔和画法",
+      "coupled": "视线、手部、承托物、布局",
+      "field_refs": "D06/D18/D21/D23",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V011",
+      "family": "S01/F02",
+      "axis": "联动主题",
+      "change": "睡前陪伴：云朵承托动物",
+      "preserve": "柔和色彩与幼态比例",
+      "coupled": "姿势、接触点、星云分布",
+      "field_refs": "D06/D21/D25",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V012",
+      "family": "S01/F02",
+      "axis": "关系",
+      "change": "三角色相互依偎",
+      "preserve": "角色身份、色系与画法",
+      "coupled": "肢体、遮挡、整体宽度",
+      "field_refs": "D23:D26",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V013",
+      "family": "S01/F03",
+      "axis": "布局",
+      "change": "主体改为下部组团，上部留白",
+      "preserve": "动物主题与柔和技法",
+      "coupled": "重心与上方装饰，不直接拉伸",
+      "field_refs": "D27:D31",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V014",
+      "family": "S01/F03",
+      "axis": "个性化",
+      "change": "增加姓名布局的空白预留区",
+      "preserve": "主图主体与画风",
+      "coupled": "文字区、最长姓名与安全区",
+      "field_refs": "D49:D52",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V015",
+      "family": "S01/F03",
+      "axis": "重复花型",
+      "change": "原创单动物组合改稀疏散点",
+      "preserve": "幼态形态与奶茶配色",
+      "coupled": "重复单元、接缝、朝向与密度",
+      "field_refs": "D08/D32:D35",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V016",
+      "family": "S01/F04",
+      "axis": "技法",
+      "change": "柔和晕染改蜡笔颗粒感",
+      "preserve": "主题、角色关系与色彩角色",
+      "coupled": "轮廓与细节尺度",
+      "field_refs": "D41:D44",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V017",
+      "family": "S01/F04",
+      "axis": "构图",
+      "change": "单个主体与月牙形成中心组合",
+      "preserve": "温柔陪伴情绪",
+      "coupled": "主体数量、布局和道具联动",
+      "field_refs": "D08/D09/D27",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    },
+    {
+      "task_id": "V018",
+      "family": "S01/F04",
+      "axis": "邻近主题",
+      "change": "原创森林动物伙伴组合",
+      "preserve": "圆润、柔和、伙伴关系",
+      "coupled": "物种、装饰、主题一致性",
+      "field_refs": "D05/D09/D11",
+      "approval": "示例未批准",
+      "duplicate_check": "未检查"
+    }
+  ],
+  "expansion_rules": [
+    {
+      "item": "组合空间",
+      "suggestion": "分层采样",
+      "scope": "已批准系列",
+      "rule": "先探索单轴，再少量兼容组合，不穷举所有笛卡尔积",
+      "cannot_replace": "销量验证",
+      "persisted": "family_id / changed_fields",
+      "note": "没有市场数据就均衡探索"
+    },
+    {
+      "item": "去重",
+      "suggestion": "只在生成前",
+      "scope": "全部任务",
+      "rule": "规划规范化指纹，相同改动组合不重复建任务；成图不做相似度判定（2026-10-13 用户决定），相近的候选一并进选款",
+      "cannot_replace": "版权判断",
+      "persisted": "plan_hash",
+      "note": "成图完全相同的字节只落一份"
+    },
+    {
+      "item": "谱系",
+      "suggestion": "母版可追溯",
+      "scope": "每个候选",
+      "rule": "保存 seed_id、analysis_version、parent_variant、generation_depth",
+      "cannot_replace": "稳定系列规则",
+      "persisted": "版本+完整参数",
+      "note": "不要只用上一张生成图无限递归"
+    },
+    {
+      "item": "耗尽",
+      "suggestion": "等待新方向",
+      "scope": "单个系列",
+      "rule": "没有不重复、又在变化域内的新计划时标记 exhausted，等待扩展范围",
+      "cannot_replace": "不停换随机种子",
+      "persisted": "exhaustion_reason",
+      "note": "调度器仍在线，但不强行付费生图"
+    }
+  ]
+}

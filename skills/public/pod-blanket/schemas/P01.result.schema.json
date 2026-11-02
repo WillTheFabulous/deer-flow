@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "P01 参考图接入 result",
+  "type": "object",
+  "required": ["seed_id", "image_kind", "design_region", "excluded_regions", "material_uncertainties", "readability", "rights_status", "source_ref"],
+  "properties": {
+    "seed_id": {"type": "string"},
+    "image_kind": {"enum": ["artwork", "mockup", "photo", "mixed"]},
+    "design_region": {
+      "type": "object",
+      "required": ["bbox", "estimated"],
+      "properties": {
+        "bbox": {
+          "description": "相对原图归一化的 [x0, y0, x1, y1]，未知为 null",
+          "oneOf": [
+            {"type": "null"},
+            {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1}, "minItems": 4, "maxItems": 4}
+          ]
+        },
+        "estimated": {"type": "boolean"}
+      }
+    },
+    "excluded_regions": {"type": "array"},
+    "material_uncertainties": {"type": "array"},
+    "readability": {"enum": ["usable", "limited", "unusable"]},
+    "rights_status": {"enum": ["approved", "unknown", "restricted"]},
+    "source_ref": {"type": "string"}
+  }
+}

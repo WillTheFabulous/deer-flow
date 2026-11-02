@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "P05 批次裂变规划 result",
+  "type": "object",
+  "required": ["family_id", "tasks"],
+  "properties": {
+    "family_id": {"type": "string"},
+    "tasks": {
+      "description": "plan_group.slots 每个槽位最多一个任务",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["slot_id", "title", "brief", "changed_fields", "acceptance_criteria"],
+        "properties": {
+          "slot_id": {"type": "string", "description": "照抄 plan_group.slots 的 slot_id"},
+          "variant_id": {"type": ["string", "null"]},
+          "parent_variant_id": {"type": ["string", "null"]},
+          "task_type": {"type": "string", "description": "小变化 small / 大变化 big；程序按槽位重新判定"},
+          "axis": {"type": "string", "description": "变化轴；程序按字段重新写"},
+          "title": {"type": "string", "minLength": 1, "description": "给人挑选用的方向名，不超过 12 个字"},
+          "brief": {
+            "type": "array",
+            "minItems": 1,
+            "description": "给人看的改动简述：每处改动一条",
+            "items": {
+              "type": "object",
+              "required": ["field_id", "to"],
+              "properties": {
+                "unit_id": {"type": "string", "description": "这处改在哪个单元（照抄槽位 fields 的 unit_id，整幅是 canvas）；没有 unit 的槽位不写"},
+                "field_id": {"type": "string", "description": "与 changed_fields 一致"},
+                "from": {"type": ["string", "null"], "description": "原来的样子，不超过 16 个字"},
+                "to": {"type": "string", "description": "改成的样子，不超过 16 个字"}
+              }
+            }
+          },
+          "keep": {"type": "string", "description": "保持不变的部分，不超过 20 个字"},
+          "changed_fields": {
+            "type": "array",
+            "minItems": 1,
+            "description": "恰好是槽位 fields 里的几处：小变化 2 处、单字段大改 1 个字段、三处组合 3 处",
+            "items": {
+              "type": "object",
+              "required": ["field_id", "to"],
+              "properties": {
+                "unit_id": {"type": "string", "description": "带 unit 的那处照抄 unit_id（整幅是 canvas）"},
+                "field_id": {"type": "string"},
+                "from": {},
+                "to": {}
+              }
+            }
+          },
+          "preserve": {"type": "array"},
+          "coupled_changes": {"type": "array"},
+          "acceptance_criteria": {"type": "array", "minItems": 1},
+          "hypothesis_ref": {"type": ["string", "null"]},
+          "difference_rationale": {"type": "string"},
+          "style_fit": {"type": "string", "description": "新内容怎么沿用参考图画风；改配色或绘制技法的方向写整幅怎么统一"}
+        }
+      }
+    },
+    "skipped": {
+      "description": "出不了不重复、又成立的方向的槽位",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["slot_id"],
+        "properties": {
+          "slot_id": {"type": "string"},
+          "reason": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "coverage_gaps": {"type": "array"},
+    "exhausted": {"type": "boolean"}
+  }
+}

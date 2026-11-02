@@ -1,0 +1,34 @@
+{
+  "version": "2026-10-26",
+  "note": "文字定制的文案库：P05 改文字内容（D49）、加或换定制位（D50）时从这里挑和画面主题相配的，或照它的风格写同样短的新句子。fields 是用它的字段；人可以直接改这个文件增删文案。",
+  "fields": ["D49", "D50"],
+  "rules": [
+    "印花文字一律英文，标语 2–5 个词，最多 6 个词；大写、首字母大写或全小写跟着原图的文字风格走",
+    "名字只用 names 里的示例名（定制位的样张名），日期照 date_formats 写",
+    "不写真实人物、品牌、商标、球队、影视或歌曲台词，不写宗教与政治口号",
+    "新文字和画面主题、受众相配：儿童图用温柔简单的词，游戏图用游戏用语，节日图用节日祝福"
+  ],
+  "phrases": {
+    "bedtime": ["Sweet Dreams", "Goodnight Moon and Stars", "Sleep Tight", "Dream Big Little One", "Nap Time Crew", "Hush Now, Sleep Well"],
+    "love_family": ["Loved Beyond Measure", "You Are My Sunshine", "Home Is Wherever You Are", "Family Is Forever", "Wrapped in Love", "Made With Love"],
+    "kids": ["Little Explorer", "Be Brave Little One", "Stay Wild", "Adventure Awaits", "Hello Little One", "Born to Play"],
+    "birthday": ["Happy Birthday", "Birthday Squad", "Make a Wish", "Another Trip Around the Sun", "Party Time"],
+    "christmas": ["Merry Christmas", "Merry and Bright", "Ho Ho Ho", "Let It Snow", "Joy to the World", "Happy Holidays", "Season's Greetings"],
+    "halloween": ["Happy Halloween", "Trick or Treat", "Spooky Season", "Boo Crew", "Hocus Pocus Time"],
+    "valentine": ["Be Mine", "Love You to the Moon and Back", "XOXO", "All You Need Is Love", "Hug Me"],
+    "spring_easter": ["Hello Spring", "Hoppy Easter", "Bloom Where You Are Planted", "Some Bunny Loves You"],
+    "autumn_thanksgiving": ["Hello Fall", "Give Thanks", "Thankful and Blessed", "Cozy Season", "Pumpkin Spice Season"],
+    "gamer": ["Game On", "Level Up", "Player One Ready", "Respawn and Relax", "Eat Sleep Game Repeat", "Press Start", "Achievement Unlocked"],
+    "space": ["Reach for the Stars", "To the Moon", "Space Explorer", "Out of This World", "Lost in Space", "Mission: Sleep"],
+    "ocean": ["Ocean Vibes", "Sea You Later", "Stay Salty", "Under the Sea", "Making Waves"],
+    "animals_pets": ["Wild and Free", "Crazy Cat Lady", "Dog Mom", "Paws and Relax", "Animal Lover"],
+    "dinosaur": ["Rawr Means I Love You", "Dino Crew", "Stomp Stomp", "Roar Loud"],
+    "farm_country": ["Farm Fresh", "Home Sweet Farm", "Country Roads", "Moo Crew"],
+    "floral_garden": ["Grow With Love", "Bloom", "Let It Grow", "Garden Party"],
+    "positive": ["Good Vibes Only", "Be Kind", "Stay Cozy", "Just Breathe", "You Got This", "Choose Happy"],
+    "generic": ["Cozy Up", "Snuggle Season", "Hello Sunshine", "Lazy Day", "Blanket Hog"]
+  },
+  "names": ["Emma", "Olivia", "Ava", "Sophia", "Mia", "Lily", "Chloe", "Grace", "Liam", "Noah", "Oliver", "Lucas", "Leo", "Ethan", "Henry", "Jack"],
+  "name_templates": ["{name}", "{name}'s Blanket", "Little {name}", "Sweet {name}", "Team {name}", "{name} Est. 2026"],
+  "date_formats": ["EST. 2026", "Since 2024", "05.12.2025", "December 25, 2026"]
+}

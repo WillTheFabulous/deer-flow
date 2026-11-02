@@ -1,0 +1,3 @@
+display_name: FLR Blanket Pipeline
+short_description: Process local FLR blanket package zips
+default_prompt: Process FLR blanket image packs from the desktop download folder, extract them, generate titles, and fill the title workbook.

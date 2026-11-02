@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "P07 独立视觉质检 result",
+  "type": "object",
+  "required": ["asset_id", "decision", "checks", "repair_instructions", "changed_fields_observed", "unintended_changes"],
+  "properties": {
+    "asset_id": {"type": "string"},
+    "decision": {"enum": ["pass", "repair", "reject", "needs_review"]},
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["criterion", "verdict"],
+        "properties": {
+          "criterion": {"type": "string"},
+          "verdict": {"enum": ["pass", "fail", "unverified"]},
+          "evidence_region": {},
+          "reason": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "repair_instructions": {"type": "array"},
+    "changed_fields_observed": {"type": "array"},
+    "unintended_changes": {"type": "array"}
+  }
+}

@@ -10,10 +10,31 @@
 #   - 项目根目录 → /projects、/prod_data：cursor-agent 的工作区，
 #     再由 config.yaml 的 sandbox.mounts 暴露给 agent（/mnt/projects、/mnt/prod_data）
 #   - 启动前运行 cursor-agent-setup.sh 生成定向代理 wrapper，然后交给上游 dev-entrypoint.sh
+#   - 装上游的 postgres extra（psycopg）：pod-blanket 的业务库在 Mooya 的 Postgres 上。
+#     构建参数与运行时的 UV_EXTRAS 必须一致：启动时 dev-entrypoint 按它 `uv sync --locked`，
+#     镜像里没装的 extra 会在启动时去 PyPI 下载（宿主机直连基本不通）。改了要 rebuild-dev.sh --reset-venv。
+#   - 前端默认不启动（2026-10-31）：Next.js 开发服务器常驻 5–9G 内存，飞书机器人、POD 流水线都不依赖它。
+#     要用网页时 `... --profile web up -d --no-build frontend`，用完 `... stop frontend`；
+#     nginx 每次请求才解析前端地址，前端停着时 /api/* 照常转发，网页 502。
+#   - gateway 内存上限 6G（峰值约 4.5G，含 podctl 拉起的出图 worker）。
 #
 # 新增项目根目录时三处必须一致：这里的 bind、config.yaml sandbox.mounts、然后 force-recreate gateway。
 services:
+  frontend:
+    profiles: ["web"]
+  nginx:
+    depends_on: !override
+      - gateway
   gateway:
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+    build:
+      args:
+        UV_EXTRAS: postgres
+    environment:
+      - UV_EXTRAS=postgres
     command:
       - sh
       - -c

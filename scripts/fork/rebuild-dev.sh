@@ -13,7 +13,8 @@
 #   --reset-venv  删除旧的 gateway-venv 卷，让新镜像重新填充依赖（依赖版本有变化时必须加）
 #
 # 可覆盖的环境变量：UV_IMAGE（默认 local-uv:0.11.1）、APT_MIRROR、NPM_REGISTRY、PYPI_MIRROR、
-# DEER_FLOW_CURSOR_AGENT=0（不叠加 cursor-agent）。BIND_HOST / PORT 写在 docker/.env 或先 export。
+# DEER_FLOW_CURSOR_AGENT=0（不叠加 cursor-agent）、DEER_FLOW_FRONTEND=1（连前端一起构建、启动；
+# 缺省不带：前端在叠加文件里归 web profile，平时不跑）。BIND_HOST / PORT 写在 docker/.env 或先 export。
 
 set -euo pipefail
 
@@ -31,6 +32,13 @@ export NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
 COMPOSE=(docker compose -p deer-flow-dev -f docker-compose-dev.yaml)
 if [ "${DEER_FLOW_CURSOR_AGENT:-1}" != "0" ]; then
     COMPOSE+=(-f docker-compose.cursor-agent.yaml)
+fi
+SERVICES=(redis gateway nginx)
+BUILD_SERVICES=(gateway)
+if [ "${DEER_FLOW_FRONTEND:-0}" = "1" ]; then
+    COMPOSE+=(--profile web)
+    SERVICES+=(frontend)
+    BUILD_SERVICES+=(frontend)
 fi
 
 fail() {
@@ -63,7 +71,7 @@ sed -i \
     -e "s#https://files.pythonhosted.org/packages/#${PYPI_MIRROR}/packages/#g" \
     -e "s#registry = \"https://pypi.org/simple\"#registry = \"${PYPI_MIRROR}/simple/\"#g" \
     "$LOCK"
-(cd docker && UV_INDEX_URL="${PYPI_MIRROR}/simple/" "${COMPOSE[@]}" build gateway frontend)
+(cd docker && UV_INDEX_URL="${PYPI_MIRROR}/simple/" "${COMPOSE[@]}" build "${BUILD_SERVICES[@]}")
 
 restore_lock
 trap - EXIT
@@ -76,5 +84,5 @@ if [ "${1:-}" = "--reset-venv" ]; then
 fi
 
 echo "==> 启动 dev 栈（不再构建）"
-(cd docker && "${COMPOSE[@]}" up -d --no-build --remove-orphans redis frontend gateway nginx)
+(cd docker && "${COMPOSE[@]}" up -d --no-build --remove-orphans "${SERVICES[@]}")
 echo "==> 完成：用 docker logs -f deer-flow-gateway 与 tail -f logs/gateway.log 观察启动"

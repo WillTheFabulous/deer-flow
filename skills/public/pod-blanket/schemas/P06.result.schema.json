@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "P06 生成指令编译 result",
+  "type": "object",
+  "required": ["variant_id", "prompt_summary", "avoid_instructions", "generation_parameters", "text_overlay", "checks", "output_level"],
+  "properties": {
+    "variant_id": {"type": "string"},
+    "prompts": {
+      "type": "object",
+      "description": "文生图：按模型家族分开的英文提示词，键取 generator_capabilities.prompt_keys；generation_modes 有文生图时必填（小变化只做图生图，可省略）",
+      "additionalProperties": {"type": "string", "minLength": 20}
+    },
+    "i2i_prompts": {
+      "type": "object",
+      "description": "图生图（输入参考图原图）：按模型家族分开的英文提示词；generation_modes 有图生图时必填",
+      "additionalProperties": {"type": "string", "minLength": 20}
+    },
+    "prompt_summary": {"type": "string", "minLength": 1},
+    "positive_prompt": {"type": "string", "description": "旧版单一提示词，仅兼容"},
+    "avoid_instructions": {"type": "array"},
+    "reference_asset_ids": {"type": "array"},
+    "edit_regions": {"type": "array"},
+    "generation_parameters": {"type": "object"},
+    "text_overlay": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "exact_text": {"type": ["string", "null"]},
+        "layout": {}
+      }
+    },
+    "checks": {"type": "array"},
+    "output_level": {"enum": ["preview", "production_candidate"]}
+  }
+}

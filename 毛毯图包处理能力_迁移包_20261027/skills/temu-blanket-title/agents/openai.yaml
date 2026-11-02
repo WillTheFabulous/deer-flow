@@ -1,0 +1,4 @@
+interface:
+  display_name: "Temu Blanket Title"
+  short_description: "Generate compliant Temu blanket titles."
+  default_prompt: "Use $temu-blanket-title to generate one compliant Temu English title from this blanket product image."

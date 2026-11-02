@@ -1,6 +1,8 @@
 """ForkFeishuChannel：飞书交互卡片、机器人菜单、卡片回调、进度块与失败通知卡片。
 
 - 裸命令 ``/repo`` ``/agent`` ``/sessions`` ``/memory`` ``/model(s)`` 直接回复交互卡片；带参数时仍走文本命令。
+- POD 工作台（pod-blanket 设计流水线）：裸命令 ``/pod``、菜单 POD / POD_CHAT 与 ``pod_*`` 按钮由
+  pod_cards.PodCardsMixin 处理（只在单聊可用）。
 - 卡片按钮回调（card.action.trigger）：工作目录 / 模型 / 会话登记就地改 store 并原地刷新卡片；
   人设切换、查看 / 新建会话、网关线程清理与当前会话指针经总线投递合成命令交给 ForkChannelManager
   （它持有网关客户端与绑定库）。
@@ -32,6 +34,7 @@ from app.channels.fork.manager import (
 )
 from app.channels.fork.memory_view import MEMORY_SCOPES, render_memory
 from app.channels.fork.personas import DEFAULT_PERSONA, DEFAULT_PERSONA_LABEL, list_personas, persona_label
+from app.channels.fork.pod_cards import POD_CARD_ACTIONS, POD_CARD_KIND, PodCardsMixin
 from app.channels.fork.progress import NOTIFICATION_METADATA_KEY, PROGRESS_STEPS_KEY, PROGRESS_TODOS_KEY, render_progress_block
 from app.channels.fork.workdir import list_project_workdirs, normalize_workdir
 from app.channels.manager import _auth_disabled_owner_user_id, _channel_storage_user_id
@@ -49,11 +52,12 @@ _BINDING_REQUIRED_TEXT = "还没有绑定 DeerFlow 账号：请在 DeerFlow 网�
 _BINDING_REQUIRED_TOAST = "请先绑定 DeerFlow 账号（网页设置里连接飞书）"
 
 # 裸命令 → 卡片类型
-_CARD_COMMANDS = {"/repo": "repo", "/agent": "agent", "/sessions": "sessions", "/memory": "memory", "/models": "model", "/model": "model"}
+_CARD_COMMANDS = {"/repo": "repo", "/agent": "agent", "/sessions": "sessions", "/memory": "memory", "/models": "model", "/model": "model", "/pod": POD_CARD_KIND}
 
 # 机器人自定义菜单 event_key（不区分大小写）。飞书后台「应用能力 → 机器人 → 自定义菜单」新增菜单项，
-# 选「事件推送」并填写下表的 event_key；另支持前缀 AGENT_<NAME> 直接切换人设（如 AGENT_SOFTWARE_TEAM）。
-_MENU_CARDS = {"REPO": "repo", "AGENT": "agent", "SESSIONS": "sessions", "MEMORY": "memory", "MODELS": "model"}
+# 选「事件推送」并填写下表的 event_key；另支持前缀 AGENT_<NAME> 直接切换人设（如 AGENT_SOFTWARE_TEAM），
+# POD 打开 POD 工作台、POD_CHAT 直接进入 POD 专属对话。
+_MENU_CARDS = {"REPO": "repo", "AGENT": "agent", "SESSIONS": "sessions", "MEMORY": "memory", "MODELS": "model", "POD": POD_CARD_KIND}
 _MENU_COMMANDS = {
     "STATUS": "/status",
     "NEW": "/new",
@@ -63,6 +67,8 @@ _MENU_COMMANDS = {
     "MEMORY_PERSONA": "/memory persona",
 }
 _MENU_AGENT_PREFIX = "AGENT_"
+_MENU_POD_CHAT = "POD_CHAT"
+_MENU_NEEDS_CHAT_TEXT = "请先给我发送一条消息，然后再使用菜单。"
 
 _MEMORY_SCOPE_LABELS = {"global": "当前用户全局", "default": "跨用户共享", "persona": "当前人设"}
 
@@ -79,6 +85,7 @@ _CARD_ACTIONS = frozenset(
         "view_session",
         "delete_session",
         "new_session",
+        *POD_CARD_ACTIONS,
     }
 )
 
@@ -104,6 +111,9 @@ class CardActionContext:
     open_id: str | None
     identity: ChatIdentity
     value: dict[str, Any]
+    message_id: str | None = None
+    # 卡片表单容器提交时，表单里各输入框的 {name: 文本}
+    form_value: dict[str, Any] | None = None
 
 
 # -- 卡片构建（纯函数，发送与回调刷新共用）-------------------------------------
@@ -246,13 +256,28 @@ def build_notification_card(text: str, *, title: str = "子任务执行失败") 
     return json.dumps(_card(title, [_markdown(text)], template="red"))
 
 
-class ForkFeishuChannel(FeishuChannel):
+class ForkFeishuChannel(PodCardsMixin, FeishuChannel):
     """fork 的飞书渠道；未覆盖的行为与上游 FeishuChannel 完全一致。"""
+
+    # -- 生命周期 -------------------------------------------------------------
+
+    async def start(self) -> None:
+        await super().start()
+        if self._running:
+            self._pod_timer_start()
+
+    async def stop(self) -> None:
+        await self._pod_timer_stop()
+        await self._pod_bitable_stop()
+        await super().stop()
 
     # -- 事件注册与卡片正文 ---------------------------------------------------
 
     def _event_handler_builder(self, lark):
-        return super()._event_handler_builder(lark).register_p2_card_action_trigger(self._on_card_action).register_p2_application_bot_menu_v6(self._on_bot_menu)
+        # 多维表格记录变更：候选表最底下的「▶ 选款完成」控制行勾上了，交给 pod-blanket 引擎验收
+        return (
+            super()._event_handler_builder(lark).register_p2_card_action_trigger(self._on_card_action).register_p2_application_bot_menu_v6(self._on_bot_menu).register_p2_drive_file_bitable_record_changed_v1(self._on_bitable_record_changed)
+        )
 
     @classmethod
     def _compose_card_text(cls, text: str, metadata: dict[str, Any] | None = None) -> str:
@@ -299,6 +324,15 @@ class ForkFeishuChannel(FeishuChannel):
             response = await asyncio.to_thread(self._api_client.im.v1.message.create, request)
         if not response.success():
             raise RuntimeError(f"Feishu interactive send failed: code={response.code}, msg={response.msg}, log_id={response.get_log_id()}")
+
+    async def _patch_card(self, message_id: str, card: dict[str, Any]) -> None:
+        """原地替换机器人发出的交互卡片（卡片须带 update_multi）。"""
+        if not self._api_client or not self._PatchMessageRequest:
+            return
+        request = self._PatchMessageRequest.builder().message_id(message_id).request_body(self._PatchMessageRequestBody.builder().content(json.dumps(card)).build()).build()
+        response = await asyncio.to_thread(self._api_client.im.v1.message.patch, request)
+        if not response.success():
+            raise RuntimeError(f"Feishu card patch failed: code={response.code}, msg={response.msg}, log_id={response.get_log_id()}")
 
     def _schedule(self, coroutine: Coroutine[Any, Any, Any], *, name: str, msg_id: str) -> None:
         """从 lark 线程把协程投递到主事件循环（主循环未运行时丢弃并告警）。"""
@@ -387,6 +421,8 @@ class ForkFeishuChannel(FeishuChannel):
         identity = await self._resolve_identity(chat_id, open_id)
         if identity.blocked:
             return self._build_card_content(_BINDING_REQUIRED_TEXT)
+        if kind == POD_CARD_KIND:
+            return await self._pod_entry_card(chat_id, open_id)
         return await asyncio.to_thread(self._build_card, kind, chat_id or "", identity)
 
     async def _reply_card_of_kind(self, msg_id: str, chat_id: str, open_id: str | None, kind: str) -> None:
@@ -451,6 +487,13 @@ class ForkFeishuChannel(FeishuChannel):
                 self._schedule(self._create_card_of_kind(chat_id, open_id, kind), name=f"menu_{kind}_card", msg_id=event_key)
                 return
 
+            if event_key == _MENU_POD_CHAT:
+                if chat_id:
+                    self._schedule(self._pod_menu_enter_chat(chat_id, open_id), name="menu_pod_chat", msg_id=event_key)
+                elif open_id:
+                    self._schedule(self._send_interactive(self._build_card_content(_MENU_NEEDS_CHAT_TEXT), open_id=open_id), name="menu_hint", msg_id=event_key)
+                return
+
             if event_key.startswith(_MENU_AGENT_PREFIX):
                 command: str | None = "/agent " + event_key[len(_MENU_AGENT_PREFIX) :].lower()
             else:
@@ -461,11 +504,20 @@ class ForkFeishuChannel(FeishuChannel):
             if not chat_id:
                 # 还没和机器人单聊过，找不到会话：提示后返回
                 if open_id:
-                    self._schedule(self._send_interactive(self._build_card_content("请先给我发送一条消息，然后再使用菜单。"), open_id=open_id), name="menu_hint", msg_id=event_key)
+                    self._schedule(self._send_interactive(self._build_card_content(_MENU_NEEDS_CHAT_TEXT), open_id=open_id), name="menu_hint", msg_id=event_key)
                 return
             self._publish_synthetic_command(chat_id, open_id, command, source=BOT_MENU_SOURCE)
         except Exception:
             logger.exception("[Feishu] error handling bot menu event")
+
+    async def _pod_menu_enter_chat(self, chat_id: str, open_id: str | None) -> None:
+        """菜单 POD_CHAT：菜单事件只带 open_id，身份在主循环里解析后再切换会话。"""
+        identity = await self._resolve_identity(chat_id, open_id)
+        if identity.blocked:
+            text = _BINDING_REQUIRED_TEXT
+        else:
+            _kind, text = self._pod_enter_chat(self._channel_store(), chat_id, open_id, identity.current_thread_id)
+        await self._send_interactive(self._build_card_content(text), chat_id=chat_id)
 
     # -- 卡片按钮回调（lark 线程内同步执行，须尽快返回）------------------------
 
@@ -498,7 +550,17 @@ class ForkFeishuChannel(FeishuChannel):
                 return P2CardActionTriggerResponse({"toast": _toast("error", "处理失败，请重试")})
             if identity.blocked:
                 return P2CardActionTriggerResponse({"toast": _toast("warning", _BINDING_REQUIRED_TOAST)})
-            context = CardActionContext(store=store, chat_id=chat_id, open_id=open_id, identity=identity, value=value)
+            message_id = getattr(event.context, "open_message_id", None)
+            form_value = getattr(event.action, "form_value", None)
+            context = CardActionContext(
+                store=store,
+                chat_id=chat_id,
+                open_id=open_id,
+                identity=identity,
+                value=value,
+                message_id=message_id,
+                form_value=form_value if isinstance(form_value, dict) else None,
+            )
             payload = getattr(self, f"_card_action_{action}")(context)
             logger.info("[Feishu] card action %s handled: chat_id=%s", action, chat_id)
             return P2CardActionTriggerResponse(payload)

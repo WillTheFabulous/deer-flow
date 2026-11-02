@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "P10 归档与人工选款 result（可选的文字摘要；清单由程序生成）",
+  "type": "object",
+  "required": ["asset_id", "design_summary", "difference_summary", "human_decision", "cost_status"],
+  "properties": {
+    "asset_id": {"type": "string"},
+    "lineage_refs": {"type": "array"},
+    "artifact_manifest": {"type": "array"},
+    "design_summary": {"type": "string"},
+    "difference_summary": {"type": "string"},
+    "quality_status": {"type": "string"},
+    "print_status": {"type": "string"},
+    "human_decision": {"enum": ["pending"]},
+    "cost_status": {"enum": ["settled", "pending", "unknown"]},
+    "unresolved_items": {"type": "array"}
+  }
+}

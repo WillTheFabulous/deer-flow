@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "P11 反馈与策略更新 result",
+  "type": "object",
+  "required": ["technical_findings", "human_preference_findings", "market_findings", "data_limitations", "next_experiments", "proposed_family_changes", "requires_approval"],
+  "properties": {
+    "technical_findings": {"type": "array"},
+    "human_preference_findings": {"type": "array"},
+    "market_findings": {"type": "array"},
+    "data_limitations": {"type": "array"},
+    "next_experiments": {"type": "array"},
+    "proposed_family_changes": {"type": "array"},
+    "requires_approval": {"type": "boolean"}
+  }
+}

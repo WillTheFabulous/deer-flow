@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "G00 公共输出外壳",
+  "type": "object",
+  "required": ["schema_version", "job_id", "stage", "status", "result", "unknowns", "evidence_refs", "next_action"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "job_id": {"type": "string"},
+    "stage": {"type": "string"},
+    "status": {"enum": ["complete", "needs_review", "blocked", "failed"]},
+    "result": {"type": "object"},
+    "unknowns": {"type": "array"},
+    "evidence_refs": {"type": "array"},
+    "next_action": {"type": "string"}
+  }
+}

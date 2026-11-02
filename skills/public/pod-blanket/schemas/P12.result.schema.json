@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "P12 任务命名 result",
+  "type": "object",
+  "required": ["description"],
+  "properties": {
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20,
+      "description": "参考图印花的简短描述：主体 + 风格（或题材），4–8 个汉字，最多 10 个字，不含日期、编号、标点和空格"
+    }
+  }
+}

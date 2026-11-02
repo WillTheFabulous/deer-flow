@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "P09 印制适配检查 result（有实际 SKU 模板时才调用）",
+  "type": "object",
+  "required": ["asset_id", "readiness", "checks"],
+  "properties": {
+    "asset_id": {"type": "string"},
+    "sku_id": {"type": ["string", "null"]},
+    "template_version": {"type": ["string", "null"]},
+    "readiness": {"enum": ["print_ready", "preview_ready", "needs_review", "failed"]},
+    "checks": {"type": "array"},
+    "adaptation_actions": {"type": "array"},
+    "print_file_ref": {"type": ["string", "null"]},
+    "mockup_ref": {"type": ["string", "null"]},
+    "physical_sample_status": {"type": "string"}
+  }
+}

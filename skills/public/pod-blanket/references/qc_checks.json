@@ -1,0 +1,200 @@
+{
+  "source": "POD毛毯_设计拆解与长任务Agent方案_v1.xlsx / 质量与反馈",
+  "note": "先判断能否使用，再判断差异与审美；质量通过不等于市场验证通过。",
+  "checks": [
+    {
+      "check_id": "Q01",
+      "content": "有效印花范围",
+      "method": "排除主图标题、尺寸线、播放按钮、场景",
+      "on_failure": "退回接入/指令编译",
+      "owner": "视觉+人工",
+      "do_not_misjudge": "照片褶皱不是印花纹理"
+    },
+    {
+      "check_id": "Q02",
+      "content": "任务变化落实",
+      "method": "对比 changed_fields 的目标和实际成图",
+      "on_failure": "定点修复或淘汰",
+      "owner": "独立视觉调用",
+      "do_not_misjudge": "提示词写了不代表图像做到了"
+    },
+    {
+      "check_id": "Q03",
+      "content": "保留条件",
+      "method": "逐条核对批准 family_spec",
+      "on_failure": "修复或转人工",
+      "owner": "独立视觉调用",
+      "do_not_misjudge": "不能因画得好看放过系列漂移"
+    },
+    {
+      "check_id": "Q04",
+      "content": "角色数量与结构",
+      "method": "角色、五官、肢体和物种辨识",
+      "on_failure": "定点修复；超过次数淘汰",
+      "owner": "视觉检查",
+      "do_not_misjudge": "遮挡不能自动当作缺肢"
+    },
+    {
+      "check_id": "Q05",
+      "content": "关系与承托",
+      "method": "互动、遮挡和接触是否合理",
+      "on_failure": "返回动作/构图阶段",
+      "owner": "视觉检查",
+      "do_not_misjudge": "同样三个动物不代表关系一致"
+    },
+    {
+      "check_id": "Q06",
+      "content": "文字与姓名",
+      "method": "精确字符串比对、OCR、人工抽检",
+      "on_failure": "独立排版或重做文字",
+      "owner": "工具+人工",
+      "do_not_misjudge": "不得擅自改姓名、拼写和字数"
+    },
+    {
+      "check_id": "Q07",
+      "content": "全图与缩略图",
+      "method": "查看完整图及商品列表尺寸预览",
+      "on_failure": "调整尺度、密度或主次",
+      "owner": "视觉检查",
+      "do_not_misjudge": "局部精细不等于缩略图可辨识"
+    },
+    {
+      "check_id": "Q08",
+      "content": "无缝花型",
+      "method": "仅对 repeat 类型做多单元平铺检查",
+      "on_failure": "修接缝后复检",
+      "owner": "拼接工具+视觉",
+      "do_not_misjudge": "单幅场景标不适用，不强行做无缝"
+    },
+    {
+      "check_id": "Q09",
+      "content": "生成前去重",
+      "method": "规范化变量计划计算 plan_hash",
+      "on_failure": "不创建重复任务",
+      "owner": "程序",
+      "do_not_misjudge": "换措辞不产生新设计计划"
+    },
+    {
+      "check_id": "Q11",
+      "content": "模板与文件参数",
+      "method": "实测像素/比例/格式/profile 对照 SKU",
+      "on_failure": "无模板只能预览；不合格则适配",
+      "owner": "程序+P09",
+      "do_not_misjudge": "改 DPI 标签不能补充细节"
+    },
+    {
+      "check_id": "Q12",
+      "content": "安全区与裁切",
+      "method": "脸和文字不进入模板危险区域",
+      "on_failure": "重排或背景延展",
+      "owner": "版面工具",
+      "do_not_misjudge": "不同尺寸不能简单非等比拉伸"
+    },
+    {
+      "check_id": "Q13",
+      "content": "实物效果",
+      "method": "首版打样：颜色、细节、裁切和面料观感",
+      "on_failure": "修文件或换工艺",
+      "owner": "人工",
+      "do_not_misjudge": "屏幕预览不能证明触感/耐洗"
+    },
+    {
+      "check_id": "Q14",
+      "content": "素材可用范围",
+      "method": "来源说明和人工确认记录",
+      "on_failure": "隔离受限素材；等待确认",
+      "owner": "人工+元数据",
+      "do_not_misjudge": "相似度既不是侵权结论也不是授权证明"
+    },
+    {
+      "check_id": "Q15",
+      "content": "预算/重试上限",
+      "method": "调用前事务检查预留和已结算费用",
+      "on_failure": "停止新增或等待对账",
+      "owner": "程序",
+      "do_not_misjudge": "模型口头承诺不替代硬限制"
+    },
+    {
+      "check_id": "Q16",
+      "content": "外部结果未知",
+      "method": "根据请求 ID 查供应商状态与账单",
+      "on_failure": "waiting_external，不重复收费提交",
+      "owner": "程序+必要人工",
+      "do_not_misjudge": "超时不等于没生成或没扣费"
+    },
+    {
+      "check_id": "Q17",
+      "content": "归档完整",
+      "method": "文件存在、哈希正确、版本与父级能追溯",
+      "on_failure": "补齐后才能标记完成",
+      "owner": "程序",
+      "do_not_misjudge": "路径字符串不代表真实文件存在"
+    },
+    {
+      "check_id": "Q18",
+      "content": "停止与恢复",
+      "method": "模拟重启、额度为零、审核积压、空队列",
+      "on_failure": "按状态等待/恢复，不重复任务",
+      "owner": "上线前测试",
+      "do_not_misjudge": "24 小时目标不绕过停止条件"
+    }
+  ],
+  "metrics": [
+    {
+      "metric": "首次质检通过率",
+      "numerator": "首次即通过 S07 的图数",
+      "denominator": "完成首次质检的图数",
+      "when_no_data": "未知，不按 0%",
+      "purpose": "识别生成指令与模型稳定性",
+      "note": "不包含未完成任务"
+    },
+    {
+      "metric": "质检通过率",
+      "numerator": "通过质检（含修复后通过）进入候选库的图数",
+      "denominator": "完成质检的图数（修复链只算最后一版）",
+      "when_no_data": "未知",
+      "purpose": "衡量有效产出；相近的候选不再判重复，一并交给人工选款",
+      "note": "不是爆款率"
+    },
+    {
+      "metric": "每个候选成本",
+      "numerator": "本批全部已结算调用费用",
+      "denominator": "本批通过质检的候选数",
+      "when_no_data": "未结算则成本待对账；分母为 0 不计算",
+      "purpose": "评估成本效率",
+      "note": "包括失败、重试、修复、质检和规划"
+    },
+    {
+      "metric": "人工选中率",
+      "numerator": "人工选择保留的候选数",
+      "denominator": "完成人工评审的候选数",
+      "when_no_data": "未知",
+      "purpose": "了解团队偏好",
+      "note": "人工偏好不能替代市场表现"
+    },
+    {
+      "metric": "点击率（可选）",
+      "numerator": "同口径商品点击数",
+      "denominator": "同站点/时期/流量口径曝光数",
+      "when_no_data": "未知",
+      "purpose": "上线后衡量主图吸引力",
+      "note": "同时记录主图版本、价格和流量来源"
+    },
+    {
+      "metric": "转化率（可选）",
+      "numerator": "归因规则一致的订单数",
+      "denominator": "预先选定的商品访问数或点击数",
+      "when_no_data": "未知",
+      "purpose": "上线后比较候选表现",
+      "note": "分母定义必须固定，不混用户数和次数"
+    },
+    {
+      "metric": "净收益（可选）",
+      "numerator": "收入扣商品/履约/退款/投放/生成成本",
+      "denominator": "不适用",
+      "when_no_data": "缺成本则未知",
+      "purpose": "最终商业评价",
+      "note": "不以订单量替代盈利"
+    }
+  ]
+}

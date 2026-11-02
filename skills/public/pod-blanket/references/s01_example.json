@@ -1,0 +1,136 @@
+{
+  "source": "POD毛毯_设计拆解与长任务Agent方案_v1.xlsx / 元素关系与假设",
+  "note": "S01 儿童动物图的示例；视觉作用为设计判断，购买动机为待验证假设。只作格式参考，不得当作新参考图的结论。",
+  "objects": [
+    {
+      "object_id": "E01",
+      "role": "主体：长颈鹿",
+      "observable": "长颈、斑点、圆润、坐姿",
+      "position_and_function": "左侧，形成较高轮廓",
+      "relations_and_dependencies": "邻近 E02；与 E04 同一承托组",
+      "variable_directions": "物种、斑点、姿态、配饰",
+      "limits": "长耳/长角替换要检查顶部空间"
+    },
+    {
+      "object_id": "E02",
+      "role": "主体：小象",
+      "observable": "灰色、大耳、幼态坐姿",
+      "position_and_function": "中间偏低，连接左右体量",
+      "relations_and_dependencies": "邻近 E01/E03；大耳影响间距",
+      "variable_directions": "表情、姿态、灰色冷暖",
+      "limits": "耳朵/鼻子不能与其他肢体混接"
+    },
+    {
+      "object_id": "E03",
+      "role": "主体：小熊",
+      "observable": "棕黄、圆耳、坐姿、抬手",
+      "position_and_function": "右侧较宽体量、暖色块",
+      "relations_and_dependencies": "邻近 E02；手部与周边空间相关",
+      "variable_directions": "熊换兔、挥手换睡眠",
+      "limits": "保持识别度；耳朵变化联动装饰"
+    },
+    {
+      "object_id": "E04",
+      "role": "承托：枝条",
+      "observable": "横向延伸并有枝叶",
+      "position_and_function": "连接主体底部与左右边缘",
+      "relations_and_dependencies": "承托 E01/E02/E03",
+      "variable_directions": "云朵、草地、月牙",
+      "limits": "不是独立替换，需修正接触姿态"
+    },
+    {
+      "object_id": "E05",
+      "role": "装饰：星星组",
+      "observable": "大小不同，分散于周边",
+      "position_and_function": "填充留白，制造节奏",
+      "relations_and_dependencies": "围绕主体群，不抢焦点",
+      "variable_directions": "月牙、圆点、疏密变化",
+      "limits": "不能与眼睛等小细节混淆"
+    },
+    {
+      "object_id": "E06",
+      "role": "装饰：云朵组",
+      "observable": "浅色，分布于上下区域",
+      "position_and_function": "围合主体与场景提示",
+      "relations_and_dependencies": "与 E05 构成外围层",
+      "variable_directions": "色彩、数量、形态",
+      "limits": "数量变化后重新检查留白"
+    },
+    {
+      "object_id": "E07",
+      "role": "底色",
+      "observable": "浅色毯面",
+      "position_and_function": "提供主体对比",
+      "relations_and_dependencies": "支撑所有元素可读性",
+      "variable_directions": "奶白、雾蓝、浅绿",
+      "limits": "要保留足够明暗区分"
+    }
+  ],
+  "relations": [
+    {
+      "relation_id": "R01",
+      "from": "E01",
+      "type": "靠近",
+      "to": "E02",
+      "constraint": "高低配合，不要求完全对称",
+      "check_when_changed": "间距与耳朵遮挡",
+      "evidence": "观察"
+    },
+    {
+      "relation_id": "R02",
+      "from": "E02",
+      "type": "靠近",
+      "to": "E03",
+      "constraint": "中央衔接右侧较宽体量",
+      "check_when_changed": "姿态、重叠、色块平衡",
+      "evidence": "观察与判断"
+    },
+    {
+      "relation_id": "R03",
+      "from": "E01/E02/E03",
+      "type": "共同承托",
+      "to": "E04",
+      "constraint": "底部接触自然",
+      "check_when_changed": "替换承托物时联动全部接触点",
+      "evidence": "观察与判断"
+    },
+    {
+      "relation_id": "R04",
+      "from": "E05/E06",
+      "type": "外围装饰",
+      "to": "主体组合",
+      "constraint": "装饰不遮挡脸与重要轮廓",
+      "check_when_changed": "密度、留白、焦点",
+      "evidence": "判断"
+    }
+  ],
+  "hypotheses": [
+    {
+      "hypothesis_id": "H01",
+      "hypothesis": "陪伴感吸引购买",
+      "feature_refs": "圆润幼态、三个角色靠近",
+      "existing_evidence": "图像特征；无购买动机数据",
+      "missing_evidence": "评论/访谈/控制条件的测试",
+      "test_axis": "并排与依偎，其他尽量一致",
+      "status": "待验证"
+    },
+    {
+      "hypothesis_id": "H02",
+      "hypothesis": "配色利于儿童房搭配",
+      "feature_refs": "浅底、棕灰主体、柔和对比",
+      "existing_evidence": "图像特征；无真实房间适配数据",
+      "missing_evidence": "使用场景反馈与配色对照",
+      "test_axis": "奶茶与雾蓝，统一展示",
+      "status": "待验证"
+    },
+    {
+      "hypothesis_id": "H03",
+      "hypothesis": "定制增强礼物属性",
+      "feature_refs": "潜在姓名预留区，不是原图事实",
+      "existing_evidence": "仅为新方向建议",
+      "missing_evidence": "是否支持定制、订单用途与成本",
+      "test_axis": "无字与姓名款；记录额外变量",
+      "status": "待验证"
+    }
+  ]
+}

@@ -191,6 +191,13 @@ class ForkChannelManager(ChannelManager):
             return thread_id
         return await self._adopt_legacy_thread(msg)
 
+    async def _store_thread_id(self, msg: InboundMessage, thread_id: str) -> None:
+        await super()._store_thread_id(msg, thread_id)
+        if self._is_bound(msg) and not msg.topic_id:
+            # 已绑定时上游只写绑定库；会话登记里人设 / 模型 / 工作目录的变更要同步到 chat 级指针指向的会话，
+            # 不镜像的话会同步进旧会话
+            self.store.set_thread_id(msg.channel_name, msg.chat_id, thread_id, user_id=msg.user_id)
+
     async def _adopt_legacy_thread(self, msg: InboundMessage) -> str | None:
         """刚绑定、绑定库里还没有映射时，沿用绑定前 ChannelStore 里的会话指针，让对话接着进行。
 
